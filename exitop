@@ -1,0 +1,103 @@
+#! /usr/bin/perl -w
+
+use strict;
+use Data::Dumper;
+
+$SIG{INT} = \&sig;
+$SIG{ALRM} = \&sig;
+
+alarm 5;
+
+my $stats = {};
+
+my @bits;
+my ($date, $time, $timezone);
+my $code;
+
+while (my $line = <>) {
+  chomp $line;
+  @bits = split(/\s+/, $line);
+  ($date, $time, $timezone, @bits) = @bits;
+  $code = "";
+  $code .= "t" if $line =~ /\s[=-]>\s/;
+  $code .= "f" if $line =~ /\s<=\s/;
+  $code .= "r" if $line =~ /temporarily rejected RCPT/;
+
+  if ($bits[0] =~ /^[[:alnum:]]{6}-[[:alnum:]]{6}-[[:alnum:]]{2}$/) {
+    push @bits, "i=$bits[0]";
+  }
+
+  # recipient
+  if ($line =~ /=>\s([^\s]+)\s/) {
+    push @bits, "r=$1";
+  }
+
+  # subject (multiword "delimited")
+  if ($line =~ s/\sT="(.*[^\\])"//) {
+    push @bits, "t=$1";
+  }
+
+  # subject (as before, in rejected spam)
+  if ($line =~ s/\ssubject="(.*[^\\])"//) {
+    push @bits, "z=$1";
+  }
+
+  foreach my $i (0..$#bits) {
+    if ($bits[$i] =~ /^([a-zA-SU-Z])=(.*)$/) {
+      $$stats{$1 . $code}{$2} = [0, 0] unless defined $$stats{$1 . $code}{$2};
+      $$stats{$1 . $code}{$2}[0]++;
+      $$stats{$1 . $code}{$2}[1] = time();
+    }
+  }
+#  print $line . "\n";
+}
+
+output($stats);
+
+
+sub sig
+{
+  my $signame = shift;
+
+  #print Dumper $stats;
+  output($stats);
+
+  purge($stats);
+
+  exit(0) if $signame eq 'INT';
+  alarm 5 if $signame eq 'ALRM';
+}
+
+sub purge
+{
+  my $s = shift;
+  my $t = time() - 300; # keep records for 300 seconds
+
+  foreach my $code (keys %$s) {
+    foreach my $data (keys %{$$s{$code}}) {
+#      print "$data(" . $$s{$code}{$data}[0] . ")";
+      if ($$s{$code}{$data}[1] < $t) {
+        delete $$s{$code}{$data};
+#	print "[D]";
+      }
+#      print " ";
+    }
+  }
+#  print "\n";
+}
+
+sub output
+{
+  my $s = shift;
+
+  foreach my $code (sort keys %$s) {
+    my $count = 1;
+    foreach my $data (sort { $$s{$code}{$b}[0] <=> $$s{$code}{$a}[0] } keys %{$$s{$code}}) {
+      print "$code - " . $$s{$code}{$data}[0] . "\t$data\n";
+      last if $count++ > 8; # max per section
+      last if $$s{$code}{$data}[0] < 2; # display threshold
+    }
+  }
+  print "-" x 80;
+  print "\n\n";
+}
