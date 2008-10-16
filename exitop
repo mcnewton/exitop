@@ -9,50 +9,74 @@ $SIG{ALRM} = \&sig;
 alarm 5;
 
 my $stats = {};
+my $messages = {};
 
 my @bits;
 my ($date, $time, $timezone);
-my $code;
 
 while (my $line = <>) {
   chomp $line;
   @bits = split(/\s+/, $line);
   ($date, $time, $timezone, @bits) = @bits;
-  $code = "";
-  $code .= "t" if $line =~ /\s[=-]>\s/;
-  $code .= "f" if $line =~ /\s<=\s/;
-  $code .= "r" if $line =~ /temporarily rejected RCPT/;
+	
+  # should be calculated from log line, not use time()
+  my $msgtime = time();
 
+  my $id;
+  my $msg;
+	my @statometer;
+
+  # message id
   if ($bits[0] =~ /^[[:alnum:]]{6}-[[:alnum:]]{6}-[[:alnum:]]{2}$/) {
-    push @bits, "i=$bits[0]";
+    $id = $bits[0];
+    push @statometer, ["id", $bits[0]];
   }
 
-  # recipient
-  if ($line =~ /=>\s([^\s]+)\s/) {
-    push @bits, "r=$1";
+  if (defined $id) {
+    $$messages{$id} = { rcpts => [], rcptdomains => [] } if ! defined $$messages{$id};
+    $msg = $$messages{$id};
+	}
+
+	$$msg{lastseen} = $msgtime if defined $msg;
+
+  if ($line =~ /\s<=\s([^\s]+@([^@\s]+))\s/ ) {
+    $$msg{from} = $1 if defined $msg;
+    $$msg{fromdomain} = $2 if defined $msg;
+		push @statometer, ["from", $1];
+		push @statometer, ["fdomain", $2];
+
+    # subject (multiword "delimited")
+    if ($line =~ s/\sT="(.*[^\\])"//) {
+      $$msg{subject} = $1 if defined $msg;
+			push @statometer, ["subject", $1];
+    }
   }
 
-  # subject (multiword "delimited")
-  if ($line =~ s/\sT="(.*[^\\])"//) {
-    push @bits, "t=$1";
+  if ($line =~ /=>\s([^\s]+@([^@\s]+))\s/) {
+    push @{$$msg{rcpts}}, $1 if defined $msg;
+    push @{$$msg{rcptdomains}}, $2 if defined $msg;
+		push @statometer, ["rcpt", $1];
+		push @statometer, ["rdomain", $2];
+ #   push @bits, "r=$1";
   }
 
   # subject (as before, in rejected spam)
-  if ($line =~ s/\ssubject="(.*[^\\])"//) {
-    push @bits, "z=$1";
-  }
+#  if ($line =~ s/\ssubject="(.*[^\\])"//) {
+#    push @bits, "z=$1";
+#  }
 
-  foreach my $i (0..$#bits) {
-    if ($bits[$i] =~ /^([a-zA-SU-Z])=(.*)$/) {
-      $$stats{$1 . $code}{$2} = [0, 0] unless defined $$stats{$1 . $code}{$2};
-      $$stats{$1 . $code}{$2}[0]++;
-      $$stats{$1 . $code}{$2}[1] = time();
-    }
+  foreach my $i (0..$#statometer) {
+	  my $s = $statometer[$i];
+#		next if !defined $$s[1];
+    $$stats{$$s[0]}{$$s[1]} = [0, 0] unless defined $$stats{$$s[0]}{$$s[1]};
+    $$stats{$$s[0]}{$$s[1]}[0]++;
+    $$stats{$$s[0]}{$$s[1]}[1] = time();
   }
 #  print $line . "\n";
 }
 
 output($stats);
+print Dumper $messages;
 
 
 sub sig
@@ -61,6 +85,7 @@ sub sig
 
   #print Dumper $stats;
   output($stats);
+	print Dumper $messages;
 
   purge($stats);
 
