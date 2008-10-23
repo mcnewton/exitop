@@ -5,8 +5,10 @@ use Data::Dumper;
 
 $SIG{INT} = \&sig;
 $SIG{ALRM} = \&sig;
-
+my $refresh = 0;
 alarm 5;
+
+my $debug = 0;
 
 my $stats = {};
 my $messages = {};
@@ -15,16 +17,18 @@ my @bits;
 my ($date, $time, $timezone);
 
 while (my $line = <>) {
+  $refresh = 1;
+
   chomp $line;
   @bits = split(/\s+/, $line);
   ($date, $time, $timezone, @bits) = @bits;
-	
+  
   # should be calculated from log line, not use time()
   my $msgtime = time();
 
   my $id;
   my $msg;
-	my @statometer;
+  my @statometer;
 
   # message id
   if ($bits[0] =~ /^[[:alnum:]]{6}-[[:alnum:]]{6}-[[:alnum:]]{2}$/) {
@@ -33,31 +37,37 @@ while (my $line = <>) {
   }
 
   if (defined $id) {
-    $$messages{$id} = { rcpts => [], rcptdomains => [] } if ! defined $$messages{$id};
+    $$messages{$id} = { rcpts => [],
+                        rcptdomains => [],
+                        id => $id,
+                        count => 0 } if ! defined $$messages{$id};
     $msg = $$messages{$id};
-	}
+  }
 
-	$$msg{lastseen} = $msgtime if defined $msg;
+  $$msg{lastseen} = $msgtime if defined $msg;
 
+  # FROM <= lines
   if ($line =~ /\s<=\s([^\s]+@([^@\s]+))\s/ ) {
     $$msg{from} = $1 if defined $msg;
     $$msg{fromdomain} = $2 if defined $msg;
-		push @statometer, ["from", $1];
-		push @statometer, ["fdomain", $2];
+
+    push @statometer, ["from", $1];
+    push @statometer, ["fdomain", $2];
 
     # subject (multiword "delimited")
     if ($line =~ s/\sT="(.*[^\\])"//) {
       $$msg{subject} = $1 if defined $msg;
-			push @statometer, ["subject", $1];
+      push @statometer, ["subject", $1];
     }
   }
 
+  # TO => lines
   if ($line =~ /=>\s([^\s]+@([^@\s]+))\s/) {
     push @{$$msg{rcpts}}, $1 if defined $msg;
     push @{$$msg{rcptdomains}}, $2 if defined $msg;
-		push @statometer, ["rcpt", $1];
-		push @statometer, ["rdomain", $2];
- #   push @bits, "r=$1";
+
+    push @statometer, ["rcpt", $1];
+    push @statometer, ["rdomain", $2];
   }
 
   # subject (as before, in rejected spam)
@@ -66,13 +76,23 @@ while (my $line = <>) {
 #  }
 
   foreach my $i (0..$#statometer) {
-	  my $s = $statometer[$i];
-#		next if !defined $$s[1];
-    $$stats{$$s[0]}{$$s[1]} = [0, 0] unless defined $$stats{$$s[0]}{$$s[1]};
-    $$stats{$$s[0]}{$$s[1]}[0]++;
-    $$stats{$$s[0]}{$$s[1]}[1] = time();
+    my $s = $statometer[$i];
+#    next if !defined $$s[1];
+    $$stats{$$s[0]}{$$s[1]} = [0, 0, {}] unless defined $$stats{$$s[0]}{$$s[1]};
+    $$stats{$$s[0]}{$$s[1]}[0]++;    # number seen
+    $$stats{$$s[0]}{$$s[1]}[1] = time();   # last time seen
+    if (!defined $$stats{$$s[0]}{$$s[1]}[2]{$id}) {
+      $$stats{$$s[0]}{$$s[1]}[2]{$id} = $msg;  # hash of msgs for reference
+      $$msg{count}++;
+    }
+    print "ref+ $$msg{id} $$msg{count} $$s[0] $$s[1]\n" if $debug;
   }
 #  print $line . "\n";
+
+  refresh() if $refresh == 2;
+  print "HIT\n" if $refresh == 2;
+  exit if $refresh == 2;
+  $refresh = 0;
 }
 
 output($stats);
@@ -83,14 +103,30 @@ sub sig
 {
   my $signame = shift;
 
+  if ($signame eq 'ALRM') {
+    if ($refresh > 0) {
+      $refresh = 2;
+    } else {
+      refresh();
+    }
+    alarm 5;
+    return;
+  }
+
   #print Dumper $stats;
   output($stats);
-	print Dumper $messages;
+#  print Dumper $messages;
 
-  purge($stats);
+  tidy($stats);
 
   exit(0) if $signame eq 'INT';
   alarm 5 if $signame eq 'ALRM';
+}
+
+sub refresh
+{
+  output($stats);
+  tidy($stats);
 }
 
 sub purge
@@ -103,7 +139,7 @@ sub purge
 #      print "$data(" . $$s{$code}{$data}[0] . ")";
       if ($$s{$code}{$data}[1] < $t) {
         delete $$s{$code}{$data};
-#	print "[D]";
+#  print "[D]";
       }
 #      print " ";
     }
@@ -115,14 +151,88 @@ sub output
 {
   my $s = shift;
 
+  print "-" x 80;
+  print "\n";
+
   foreach my $code (sort keys %$s) {
     my $count = 1;
     foreach my $data (sort { $$s{$code}{$b}[0] <=> $$s{$code}{$a}[0] } keys %{$$s{$code}}) {
-      print "$code - " . $$s{$code}{$data}[0] . "\t$data\n";
-      last if $count++ > 8; # max per section
-      last if $$s{$code}{$data}[0] < 2; # display threshold
+      foreach my $msgs (sort keys %{$$s{$code}{$data}[2]}) {
+        print "$code - " . $$s{$code}{$data}[0] . "\t$data ";
+        print "  $msgs";
+        print "\n";
+      }
+
+#      last if $count++ > 8; # max per section
+#      last if $$s{$code}{$data}[0] < 2; # display threshold
     }
   }
   print "-" x 80;
   print "\n\n";
 }
+
+sub tidy
+{
+  my $s = shift;
+
+  my $numperstat = 10;
+  my $longesttime = 100; # remove stats if last message over 5 mins ago
+  my $preservetime = 300; # preserve full message info for 5 mins
+  my $preservenum = 5; # preserve 5 messages for each stat
+
+  my $t = time() - $longesttime;
+  my $pt = time() - $preservetime;
+
+  foreach my $code (keys %$s) {
+    foreach my $data (keys %{$$s{$code}}) {
+
+      # delete statistic if older than $longesttime seconds
+      if ($$s{$code}{$data}[1] < $t) {
+        # todo - lower reference counts
+        foreach my $msgid (keys %{$$s{$code}{$data}[2]}) {
+          my $msg = ${$$s{$code}{$data}[2]}{$msgid};
+          #${$$s{$code}{$data}[2]}{$msgid}{count}--;
+          $$msg{count}--;
+          print "ref_ $$msg{id} $$msg{count} $code $data\n" if $debug;
+        }
+        print "del  " . $$s{$code}{$data}[0] . " " . $$s{$code}{$data}[1] . " $code $data\n" if $debug;
+        delete $$s{$code}{$data};
+        next;
+      }
+
+#      print "T:";
+      # go through each recorded message for the stat, and delete if too old,
+      # but leave $preservenum behind for reference (may not be the latest)
+      foreach my $msgid (keys %{$$s{$code}{$data}[2]}) {
+        my $msg = ${$$s{$code}{$data}[2]}{$msgid};
+#        print " $msgid(";
+#        print $$msg{lastseen};
+#        print ")";
+#        print ${$$s{$code}{$data}[2]}{$msgid}{lastseen};
+#        print "/" . scalar keys %{$$s{$code}{$data}[2]} ;
+
+        # delete no more if we have less than the required num to preserve
+        last if scalar keys %{$$s{$code}{$data}[2]} <= $preservenum;
+
+        # delete if last seen too long ago
+        if ($$msg{lastseen} < $pt) {
+          delete ${$$s{$code}{$data}[2]}{$msgid};
+          $$msg{count}--;
+          print "ref- $$msg{id} $$msg{count} $code $data\n" if $debug;
+#          delete $$messages{$$msg{id}} if $$msg{count} < 2;
+        }
+      }
+#      print "\n";
+    }
+  }
+
+#  print Dumper $messages;
+  foreach my $m (sort keys %$messages) {
+    print "mesg $m -> (" . $$messages{$m}{count} . ")\n" if $debug;
+    delete $$messages{$m} if $$messages{$m}{count} < 1;
+  }
+
+}
+
+
+# vi:expandtab:sw=2:ts=2:comments=:si:commentstring=
