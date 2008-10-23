@@ -2,22 +2,34 @@
 
 use strict;
 use Data::Dumper;
+use Curses;
 
 $SIG{INT} = \&sig;
 $SIG{ALRM} = \&sig;
-my $refresh = 0;
-alarm 5;
+$SIG{WINCH} = \&sig;
+my $redraw = 0;
+my $alarm = 1;
+my $sig_winch = 0;
+my $tidyup = 10;
+my $tidycount = 0;
+
+alarm $alarm;
 
 my $debug = 0;
 
 my $stats = {};
 my $messages = {};
 
+my $screen = screen_init();
+add_windows($screen);
+addstr(0,0, "exitop 0.01");
+redraw();
+
 my @bits;
 my ($date, $time, $timezone);
 
 while (my $line = <>) {
-  $refresh = 1;
+  $redraw = 1;
 
   chomp $line;
   @bits = split(/\s+/, $line);
@@ -54,6 +66,12 @@ while (my $line = <>) {
     push @statometer, ["from", $1];
     push @statometer, ["fdomain", $2];
 
+    # from host
+    if ($line =~ /\sH=([^ ]+)\s/) {
+      $$msg{fhost} = $1 if defined $msg;
+      push @statometer, ["fhost", $1];
+    }
+
     # subject (multiword "delimited")
     if ($line =~ s/\sT="(.*[^\\])"//) {
       $$msg{subject} = $1 if defined $msg;
@@ -68,6 +86,12 @@ while (my $line = <>) {
 
     push @statometer, ["rcpt", $1];
     push @statometer, ["rdomain", $2];
+
+    # to host
+    if ($line =~ /\sH=([^ ]+)\s/) {
+      $$msg{rhost} = $1 if defined $msg;
+      push @statometer, ["rhost", $1];
+    }
   }
 
   # subject (as before, in rejected spam)
@@ -89,14 +113,14 @@ while (my $line = <>) {
   }
 #  print $line . "\n";
 
-  refresh() if $refresh == 2;
-  print "HIT\n" if $refresh == 2;
-  exit if $refresh == 2;
-  $refresh = 0;
+  redraw() if $redraw == 2;
+#  print "HIT\n" if $redraw == 2;
+#  exit if $redraw == 2;
+  $redraw = 0;
 }
 
-output($stats);
-print Dumper $messages;
+#output($stats);
+#print Dumper $messages;
 
 
 sub sig
@@ -104,47 +128,56 @@ sub sig
   my $signame = shift;
 
   if ($signame eq 'ALRM') {
-    if ($refresh > 0) {
-      $refresh = 2;
+    if ($redraw > 0) {
+      $redraw = 2;
     } else {
-      refresh();
+      redraw();
     }
-    alarm 5;
+
+    $tidycount--;
+    if ($tidycount < 1) {
+      tidy($stats);
+      $tidycount = $tidyup;
+    }
+
+    alarm $alarm;
     return;
   }
 
+  if ($signame eq 'WINCH') {
+    $sig_winch = 1;
+  }
+
   #print Dumper $stats;
-  output($stats);
+#  output($stats);
 #  print Dumper $messages;
 
   tidy($stats);
 
-  exit(0) if $signame eq 'INT';
-  alarm 5 if $signame eq 'ALRM';
+  finish() if $signame eq 'INT';
 }
 
-sub refresh
+sub finish
 {
-  output($stats);
-  tidy($stats);
+  screen_end();
+  exit(0);
 }
 
-sub purge
+sub redraw
 {
-  my $s = shift;
-  my $t = time() - 300; # keep records for 300 seconds
-
-  foreach my $code (keys %$s) {
-    foreach my $data (keys %{$$s{$code}}) {
-#      print "$data(" . $$s{$code}{$data}[0] . ")";
-      if ($$s{$code}{$data}[1] < $t) {
-        delete $$s{$code}{$data};
-#  print "[D]";
-      }
-#      print " ";
-    }
+#  output($stats);
+  if ($sig_winch) {
+    del_windows($screen);
+    screen_end();
+    $screen = screen_init();
+    add_windows($screen);
+    $sig_winch = 0;
   }
-#  print "\n";
+
+  foreach my $s (@{$$screen{windows}}) {
+    draw_window($s, $stats);
+  }
+  refresh();
 }
 
 sub output
@@ -156,15 +189,16 @@ sub output
 
   foreach my $code (sort keys %$s) {
     my $count = 1;
-    foreach my $data (sort { $$s{$code}{$b}[0] <=> $$s{$code}{$a}[0] } keys %{$$s{$code}}) {
+    foreach my $data (sort { $$s{$code}{$b}[0] <=> $$s{$code}{$a}[0] }
+                      keys %{$$s{$code}}) {
       foreach my $msgs (sort keys %{$$s{$code}{$data}[2]}) {
         print "$code - " . $$s{$code}{$data}[0] . "\t$data ";
         print "  $msgs";
         print "\n";
       }
 
-#      last if $count++ > 8; # max per section
-#      last if $$s{$code}{$data}[0] < 2; # display threshold
+      last if $count++ > 8; # max per section
+      last if $$s{$code}{$data}[0] < 2; # display threshold
     }
   }
   print "-" x 80;
@@ -176,7 +210,7 @@ sub tidy
   my $s = shift;
 
   my $numperstat = 10;
-  my $longesttime = 100; # remove stats if last message over 5 mins ago
+  my $longesttime = 300; # remove stats if last message over 5 mins ago
   my $preservetime = 300; # preserve full message info for 5 mins
   my $preservenum = 5; # preserve 5 messages for each stat
 
@@ -195,7 +229,8 @@ sub tidy
           $$msg{count}--;
           print "ref_ $$msg{id} $$msg{count} $code $data\n" if $debug;
         }
-        print "del  " . $$s{$code}{$data}[0] . " " . $$s{$code}{$data}[1] . " $code $data\n" if $debug;
+        print "del  " . $$s{$code}{$data}[0] . " " . $$s{$code}{$data}[1] .
+              " $code $data\n" if $debug;
         delete $$s{$code}{$data};
         next;
       }
@@ -234,5 +269,156 @@ sub tidy
 
 }
 
+sub screen_init
+{
+  my $screen = {};
+
+  initscr();
+  curs_set(0);
+  cbreak();
+  noecho();
+  leaveok(1);
+
+  return $screen;
+}
+
+sub add_windows
+{
+  my $screen = shift;
+
+  my $s;
+  $$screen{windows} = [];
+  
+  my $sh = int((LINES()-2)/4);
+
+  my $line = 2;
+
+  $s = {};
+  $$s{code} = "from";
+  $$s{title} = "From Address";
+  $$s{width} = COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, 0];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  $s = {};
+  $$s{code} = "rcpt";
+  $$s{title} = "Recipient Address";
+  $$s{width} = COLS() - COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, COLS()/2];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  $line += $sh;
+
+  $s = {};
+  $$s{code} = "fdomain";
+  $$s{title} = "From Domain";
+  $$s{width} = COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, 0];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  $s = {};
+  $$s{code} = "rdomain";
+  $$s{title} = "Recipient Domain";
+  $$s{width} = COLS() - COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, COLS()/2];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  $line += $sh;
+
+  $s = {};
+  $$s{code} = "fhost";
+  $$s{title} = "From Host";
+  $$s{width} = COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, 0];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  $s = {};
+  $$s{code} = "rhost";
+  $$s{title} = "Recipient Host";
+  $$s{width} = COLS() - COLS()/2;
+  $$s{height} = $sh;
+  $$s{pos} = [$line, COLS()/2];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+#  $$s{window} = newwin($$s{height}, $$s{width}, @$$s{pos});
+  push @{$$screen{windows}}, $s;
+
+  $line += $sh;
+
+  $s = {};
+  $$s{code} = "subject";
+  $$s{title} = "Subject";
+  $$s{width} = COLS();
+  $$s{height} = (LINES() - 2 - ($sh * 3));
+  $$s{pos} = [$line, 0];
+  $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
+  push @{$$screen{windows}}, $s;
+
+  return $screen;
+}
+
+sub del_windows
+{
+  my $screen = shift;
+
+  foreach my $s (@{$$screen{windows}}) {
+    delwin($$s{window});
+  }
+}
+
+sub draw_window
+{
+  my ($s, $d) = @_;
+  my $colw = 6;
+
+  attron($$s{window}, A_BOLD);
+  attron($$s{window}, A_REVERSE);
+  hline($$s{window}, 0, 0, " ", $$s{width});
+  addstr($$s{window}, 0, $colw, $$s{title});
+  attroff($$s{window}, A_REVERSE);
+  attroff($$s{window}, A_BOLD);
+
+  if (defined $d and defined $$d{$$s{code}}) {
+    # fill data in window
+    my $line = 1;
+    foreach my $data (sort { $$d{$$s{code}}{$b}[0] <=> $$d{$$s{code}}{$a}[0] }
+                      keys %{$$d{$$s{code}}}) {
+      my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
+      my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
+#      addstr("$num - $dstr : ");
+      addstr($$s{window}, $line, 0, $num);
+      addstr($$s{window}, $line++, $colw, $dstr);
+
+#      foreach my $msgs (sort keys %{$$s{$code}{$data}[2]}) {
+#        print "$code - " . $$s{$code}{$data}[0] . "\t$data ";
+#        print "  $msgs";
+#        print "\n";
+#      }
+
+      last if $line > $$s{height};
+    }
+    while ($line < $$s{height}) {
+      addstr($$s{window}, $line++, 0, " " x $$s{width});
+    }
+  }
+
+#  addstr($$s{window}, 1, 0, "01234 Hello world");
+  refresh($$s{window});
+}
+
+
+sub screen_end
+{
+  endwin;
+}
 
 # vi:expandtab:sw=2:ts=2:comments=:si:commentstring=
