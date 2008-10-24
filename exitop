@@ -1,12 +1,19 @@
-#! /usr/bin/perl -w
+#! /usr/bin/perl
+#
+# Exitop
+# Matthew Newton
+# 24 October 2008
+
 
 use strict;
+require "sys/ioctl.ph";
 use Data::Dumper;
 use Curses;
 
 $SIG{INT} = \&sig;
 $SIG{ALRM} = \&sig;
 $SIG{WINCH} = \&sig;
+
 my $redraw = 0;
 my $alarm = 1;
 my $sig_winch = 0;
@@ -16,12 +23,13 @@ my $tidycount = 0;
 alarm $alarm;
 
 my $debug = 0;
-my $highlightafter = 150; # highlight entries after 2.5 minutes
+my $highlightafter = 270; # highlight entries after 4.5 minutes
 
 my $stats = {};
 my $messages = {};
 
-my $screen = screen_init();
+my $screen = {};
+screen_init();
 add_windows($screen);
 addstr(0,0, "exitop 0.01");
 redraw();
@@ -116,25 +124,26 @@ sub sig
 {
   my $signame = shift;
 
-  if ($signame eq 'ALRM') {
+  $sig_winch = 1 if $signame eq 'WINCH';
+
+  if ($signame eq 'ALRM' or $signame eq 'WINCH') {
     if ($redraw > 0) {
       $redraw = 2;
     } else {
       redraw();
     }
 
-    $tidycount--;
-    if ($tidycount < 1) {
-      tidy($stats);
-      $tidycount = $tidyup;
+    if ($signame eq 'ALRM') {
+      $tidycount--;
+      if ($tidycount < 1) {
+        tidy($stats);
+        $tidycount = $tidyup;
+      }
+
+      alarm $alarm;
     }
 
-    alarm $alarm;
     return;
-  }
-
-  if ($signame eq 'WINCH') {
-    $sig_winch = 1;
   }
 
   finish() if $signame eq 'INT';
@@ -150,8 +159,22 @@ sub redraw
 {
   if ($sig_winch) {
     del_windows($screen);
-    screen_end();
-    $screen = screen_init();
+    if (defined &TIOCGWINSZ) {
+      open(TTY, "+<", "/dev/tty");
+      my $winsize;
+      unless (ioctl(TTY, &TIOCGWINSZ, $winsize="")) {
+        die sprintf "$0: ioctl TIOCGWINSZ (%08x: $!)\n", &TIOCGWINSZ;
+      }
+      close(TTY);
+      my ($row, $col, $xpixel, $ypixel) = unpack("S4", $winsize);
+      resizeterm($row, $col);
+    } else {
+      screen_end();
+      screen_init();
+    }
+    refresh();
+    addstr(0, 30, COLS() . " x " . LINES());
+    addstr(0, 45, getmaxx() . " x " . getmaxy());
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -159,6 +182,8 @@ sub redraw
   foreach my $s (@{$$screen{windows}}) {
     draw_window($s, $stats);
   }
+
+  addstr(0, 15, COLS() . " x " . LINES());
   refresh();
 }
 
@@ -219,8 +244,6 @@ sub tidy
 
 sub screen_init
 {
-  my $screen = {};
-
   initscr();
   cbreak();
   noecho();
@@ -232,8 +255,6 @@ sub screen_init
   # set up colours
   start_color();
   init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
-
-  return $screen;
 }
 
 sub add_windows
@@ -250,7 +271,7 @@ sub add_windows
   $s = {};
   $$s{code} = "from";
   $$s{title} = "From Address";
-  $$s{width} = COLS()/2;
+  $$s{width} = int(COLS()/2);
   $$s{height} = $sh;
   $$s{pos} = [$line, 0];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
@@ -259,9 +280,9 @@ sub add_windows
   $s = {};
   $$s{code} = "rcpt";
   $$s{title} = "Recipient Address";
-  $$s{width} = COLS() - COLS()/2;
+  $$s{width} = COLS() - int(COLS()/2);
   $$s{height} = $sh;
-  $$s{pos} = [$line, COLS()/2];
+  $$s{pos} = [$line, int(COLS()/2)];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
   push @{$$screen{windows}}, $s;
 
@@ -270,7 +291,7 @@ sub add_windows
   $s = {};
   $$s{code} = "fdomain";
   $$s{title} = "From Domain";
-  $$s{width} = COLS()/2;
+  $$s{width} = int(COLS()/2);
   $$s{height} = $sh;
   $$s{pos} = [$line, 0];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
@@ -279,9 +300,9 @@ sub add_windows
   $s = {};
   $$s{code} = "rdomain";
   $$s{title} = "Recipient Domain";
-  $$s{width} = COLS() - COLS()/2;
+  $$s{width} = COLS() - int(COLS()/2);
   $$s{height} = $sh;
-  $$s{pos} = [$line, COLS()/2];
+  $$s{pos} = [$line, int(COLS()/2)];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
   push @{$$screen{windows}}, $s;
 
@@ -290,7 +311,7 @@ sub add_windows
   $s = {};
   $$s{code} = "fhost";
   $$s{title} = "From Host";
-  $$s{width} = COLS()/2;
+  $$s{width} = int(COLS()/2);
   $$s{height} = $sh;
   $$s{pos} = [$line, 0];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
@@ -299,9 +320,9 @@ sub add_windows
   $s = {};
   $$s{code} = "rhost";
   $$s{title} = "Recipient Host";
-  $$s{width} = COLS() - COLS()/2;
+  $$s{width} = COLS() - int(COLS()/2);
   $$s{height} = $sh;
-  $$s{pos} = [$line, COLS()/2];
+  $$s{pos} = [$line, int(COLS()/2)];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
   push @{$$screen{windows}}, $s;
 
