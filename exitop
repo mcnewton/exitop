@@ -94,14 +94,8 @@ while (my $line = <>) {
     }
   }
 
-  # subject (as before, in rejected spam)
-#  if ($line =~ s/\ssubject="(.*[^\\])"//) {
-#    push @bits, "z=$1";
-#  }
-
   foreach my $i (0..$#statometer) {
     my $s = $statometer[$i];
-#    next if !defined $$s[1];
     $$stats{$$s[0]}{$$s[1]} = [0, 0, {}] unless defined $$stats{$$s[0]}{$$s[1]};
     $$stats{$$s[0]}{$$s[1]}[0]++;    # number seen
     $$stats{$$s[0]}{$$s[1]}[1] = time();   # last time seen
@@ -111,16 +105,10 @@ while (my $line = <>) {
     }
     print "ref+ $$msg{id} $$msg{count} $$s[0] $$s[1]\n" if $debug;
   }
-#  print $line . "\n";
 
   redraw() if $redraw == 2;
-#  print "HIT\n" if $redraw == 2;
-#  exit if $redraw == 2;
   $redraw = 0;
 }
-
-#output($stats);
-#print Dumper $messages;
 
 
 sub sig
@@ -148,12 +136,6 @@ sub sig
     $sig_winch = 1;
   }
 
-  #print Dumper $stats;
-#  output($stats);
-#  print Dumper $messages;
-
-  tidy($stats);
-
   finish() if $signame eq 'INT';
 }
 
@@ -165,7 +147,6 @@ sub finish
 
 sub redraw
 {
-#  output($stats);
   if ($sig_winch) {
     del_windows($screen);
     screen_end();
@@ -178,31 +159,6 @@ sub redraw
     draw_window($s, $stats);
   }
   refresh();
-}
-
-sub output
-{
-  my $s = shift;
-
-  print "-" x 80;
-  print "\n";
-
-  foreach my $code (sort keys %$s) {
-    my $count = 1;
-    foreach my $data (sort { $$s{$code}{$b}[0] <=> $$s{$code}{$a}[0] }
-                      keys %{$$s{$code}}) {
-      foreach my $msgs (sort keys %{$$s{$code}{$data}[2]}) {
-        print "$code - " . $$s{$code}{$data}[0] . "\t$data ";
-        print "  $msgs";
-        print "\n";
-      }
-
-      last if $count++ > 8; # max per section
-      last if $$s{$code}{$data}[0] < 2; # display threshold
-    }
-  }
-  print "-" x 80;
-  print "\n\n";
 }
 
 sub tidy
@@ -235,16 +191,10 @@ sub tidy
         next;
       }
 
-#      print "T:";
       # go through each recorded message for the stat, and delete if too old,
       # but leave $preservenum behind for reference (may not be the latest)
       foreach my $msgid (keys %{$$s{$code}{$data}[2]}) {
         my $msg = ${$$s{$code}{$data}[2]}{$msgid};
-#        print " $msgid(";
-#        print $$msg{lastseen};
-#        print ")";
-#        print ${$$s{$code}{$data}[2]}{$msgid}{lastseen};
-#        print "/" . scalar keys %{$$s{$code}{$data}[2]} ;
 
         # delete no more if we have less than the required num to preserve
         last if scalar keys %{$$s{$code}{$data}[2]} <= $preservenum;
@@ -254,14 +204,11 @@ sub tidy
           delete ${$$s{$code}{$data}[2]}{$msgid};
           $$msg{count}--;
           print "ref- $$msg{id} $$msg{count} $code $data\n" if $debug;
-#          delete $$messages{$$msg{id}} if $$msg{count} < 2;
         }
       }
-#      print "\n";
     }
   }
 
-#  print Dumper $messages;
   foreach my $m (sort keys %$messages) {
     print "mesg $m -> (" . $$messages{$m}{count} . ")\n" if $debug;
     delete $$messages{$m} if $$messages{$m}{count} < 1;
@@ -349,7 +296,6 @@ sub add_windows
   $$s{height} = $sh;
   $$s{pos} = [$line, COLS()/2];
   $$s{window} = newwin($$s{height}, $$s{width}, $$s{pos}[0], $$s{pos}[1]);
-#  $$s{window} = newwin($$s{height}, $$s{width}, @$$s{pos});
   push @{$$screen{windows}}, $s;
 
   $line += $sh;
@@ -394,15 +340,8 @@ sub draw_window
                       keys %{$$d{$$s{code}}}) {
       my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
       my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
-#      addstr("$num - $dstr : ");
       addstr($$s{window}, $line, 0, $num);
       addstr($$s{window}, $line++, $colw, $dstr);
-
-#      foreach my $msgs (sort keys %{$$s{$code}{$data}[2]}) {
-#        print "$code - " . $$s{$code}{$data}[0] . "\t$data ";
-#        print "  $msgs";
-#        print "\n";
-#      }
 
       last if $line > $$s{height};
     }
@@ -411,7 +350,6 @@ sub draw_window
     }
   }
 
-#  addstr($$s{window}, 1, 0, "01234 Hello world");
   refresh($$s{window});
 }
 
