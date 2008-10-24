@@ -16,6 +16,7 @@ my $tidycount = 0;
 alarm $alarm;
 
 my $debug = 0;
+my $highlightafter = 150; # highlight entries after 2.5 minutes
 
 my $stats = {};
 my $messages = {};
@@ -96,9 +97,9 @@ while (my $line = <>) {
 
   foreach my $i (0..$#statometer) {
     my $s = $statometer[$i];
-    $$stats{$$s[0]}{$$s[1]} = [0, 0, {}] unless defined $$stats{$$s[0]}{$$s[1]};
+    $$stats{$$s[0]}{$$s[1]} = [0, 0, {}, $msgtime] unless defined $$stats{$$s[0]}{$$s[1]};
     $$stats{$$s[0]}{$$s[1]}[0]++;    # number seen
-    $$stats{$$s[0]}{$$s[1]}[1] = time();   # last time seen
+    $$stats{$$s[0]}{$$s[1]}[1] = $msgtime;   # last time seen
     if (!defined $$stats{$$s[0]}{$$s[1]}[2]{$id}) {
       $$stats{$$s[0]}{$$s[1]}[2]{$id} = $msg;  # hash of msgs for reference
       $$msg{count}++;
@@ -221,10 +222,16 @@ sub screen_init
   my $screen = {};
 
   initscr();
-  curs_set(0);
   cbreak();
   noecho();
+
+  # turn the cursor off; don't care where it is left
+  curs_set(0);
   leaveok(1);
+
+  # set up colours
+  start_color();
+  init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
 
   return $screen;
 }
@@ -333,6 +340,9 @@ sub draw_window
   attroff($$s{window}, A_REVERSE);
   attroff($$s{window}, A_BOLD);
 
+  my $time = time() - $highlightafter;
+  my $off;
+
   if (defined $d and defined $$d{$$s{code}}) {
     # fill data in window
     my $line = 1;
@@ -341,7 +351,13 @@ sub draw_window
       my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
       my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
       addstr($$s{window}, $line, 0, $num);
+      $off = 0;
+      if ($$d{$$s{code}}{$data}[3] < $time) {
+        attron($$s{window}, COLOR_PAIR(1));
+        $off = 1;
+      }
       addstr($$s{window}, $line++, $colw, $dstr);
+      attroff($$s{window}, COLOR_PAIR(1)) if $off;
 
       last if $line > $$s{height};
     }
