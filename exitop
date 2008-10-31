@@ -3,6 +3,7 @@
 # Exitop
 # Matthew Newton
 # 24 October 2008
+# $Format:%H% d$
 
 
 use strict;
