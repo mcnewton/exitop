@@ -1,0 +1,28 @@
+#! /usr/bin/perl
+#
+# rewrite exim syslogged logs as "original" exim logs
+# uses the timezone field to put the server hostname
+#
+# Matthew Newton
+# 2008-10-13
+#
+
+use strict;
+
+my %months = ("Jan" => "01", "Feb" => "02", "Mar" => "03", "Apr" => "04",
+              "May" => "05", "Jun" => "06", "Jul" => "07", "Aug" => "08",
+              "Sep" => "09", "Oct" => "10", "Nov" => "11", "Dec" => "12");
+
+my @d = localtime;
+my $year = $d[5] + 1900;
+
+
+while (<>) {
+  chomp;
+  next unless /^(\w{3}) ([0-9 ]{2}) (\d\d:\d\d:\d\d) (\w+) exim\[\d+\]: (.*)$/;
+  my ($mon, $day, $time, $host, $log) = ($1, $2, $3, $4, $5);
+  $mon = $months{$mon};
+  $day =~ s/^\s/0/;
+  print "$year-$mon-$day $time +0000 $log [$host]\n";
+}
+
