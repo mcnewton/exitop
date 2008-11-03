@@ -40,8 +40,19 @@ my ($date, $time, $timezone);
 
 while (my $line = <>) {
   $redraw = 1;
-
   chomp $line;
+
+  addline($line);
+
+  redraw() if $redraw == 2;
+  $redraw = 0;
+}
+
+
+sub addline
+{
+  my $line = shift;
+
   @bits = split(/\s+/, $line);
   ($date, $time, $timezone, @bits) = @bits;
   
@@ -90,7 +101,7 @@ while (my $line = <>) {
   }
 
   # TO => lines
-  if ($line =~ /=>\s([^\s]+@([^@\s]+))\s/) {
+  if ($line =~ /[=-]>\s([^\s]+@([^@\s]+))\s/) {
     push @{$$msg{rcpts}}, $1 if defined $msg;
     push @{$$msg{rcptdomains}}, $2 if defined $msg;
 
@@ -115,9 +126,6 @@ while (my $line = <>) {
     }
     print "ref+ $$msg{id} $$msg{count} $$s[0] $$s[1]\n" if $debug;
   }
-
-  redraw() if $redraw == 2;
-  $redraw = 0;
 }
 
 
@@ -245,9 +253,12 @@ sub tidy
 
 sub screen_init
 {
-  initscr();
+#  initscr();
+  open(TERMFD, "+<", "/dev/tty");
+  $$screen{terminal} = newterm($ENV{TERM}, *TERMFD, *TERMFD);
   cbreak();
   noecho();
+  halfdelay(10);
 
   # turn the cursor off; don't care where it is left
   curs_set(0);
@@ -256,6 +267,11 @@ sub screen_init
   # set up colours
   start_color();
   init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
+}
+
+sub screen_end
+{
+  endwin();
 }
 
 sub add_windows
@@ -391,10 +407,5 @@ sub draw_window
   refresh($$s{window});
 }
 
-
-sub screen_end
-{
-  endwin;
-}
 
 # vi:expandtab:sw=2:ts=2:comments=:si:commentstring=
