@@ -7,9 +7,9 @@
 
 
 use strict;
-require "sys/ioctl.ph";
 use Data::Dumper;
 use Curses;
+use Fcntl;
 
 $SIG{INT} = \&sig;
 $SIG{ALRM} = \&sig;
@@ -17,14 +17,16 @@ $SIG{WINCH} = \&sig;
 
 my $redraw = 0;
 my $alarm = 1;
+my $alarmed = 0;
 my $sig_winch = 0;
 my $tidyup = 10;
 my $tidycount = 0;
+my $blocksize = 1024*1024;
 
 alarm $alarm;
 
 my $debug = 0;
-my $highlightafter = 270; # highlight entries after 4.5 minutes
+my $highlightafter = 300; # highlight entries after 5 minutes
 
 my $stats = {};
 my $messages = {};
@@ -35,23 +37,142 @@ add_windows($screen);
 addstr(0,0, "exitop 0.01");
 redraw();
 
-my @bits;
-my ($date, $time, $timezone);
+# setup bitmaps for select, to watch stdin and keypresses
+my $srin = "";
+my $srout;
+vec($srin, fileno(STDIN), 1) = 1;
+vec($srin, fileno($$screen{terminfd}), 1) = 1;
 
-while (my $line = <>) {
-  $redraw = 1;
-  chomp $line;
-
-  addline($line);
-
-  redraw() if $redraw == 2;
-  $redraw = 0;
+if (!fcntl(STDIN, F_SETFL, O_NONBLOCK)) {
+  screen_end();
+  die "cannot set STDIN to non-blocking mode";
 }
 
+#$$logs{"-"} = {"fn" => fileno(STDIN), "fh" => *STDIN{IO}, "buf" => ""};
+
+# hash of all files to watch - contains:
+#  key: filename
+#  fh - filehandle (or undef if not open)
+#  len - file size
+#  buf - stuff read from file but not yet processed
+
+my $logs = {};
+foreach my $file (@ARGV) {
+  if (! -r $file) {
+    die "cannot read file $file";
+  }
+  next if defined($$logs{$file});
+
+  $$logs{$file} = {buf => "", fh => undef, len => undef, tb => 0};
+#  my $fh;
+#  sysopen($fh, $file, O_RDONLY | O_NONBLOCK);
+#  $$logs{$file}{fh} = $fh;
+#  $$logs{$file}{fn} = fileno($fh);
+}
+
+my $delay = 0;
+
+while (1) {
+# check for keypresses or stdin input
+  my $n = select($srout = $srin, undef, undef, $delay);
+  $delay = $alarm;
+
+  my $v = unpack("b*", $srout) . "    ";
+  addstr(0,40, "vec: $v");
+
+  if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
+    my $key = getch();
+    addstr(0, 70, $key) unless $key == -1;
+    last if $key eq 'q';
+    redraw() if $key eq chr(12);
+  }
+
+  if (vec($srout, fileno(STDIN), 1) == 1) {
+    my $line = <STDIN>;
+    addline($line);
+  }
+
+  my $status = "";
+
+  foreach my $file (keys %$logs) {
+    my @st = stat($file);
+    my $flen = $st[7];
+
+    # skip this file if length is 0, or unchanged
+    $$logs{$file}{len} = $flen unless defined $$logs{$file}{len};
+    $status .= "$file:" . $$logs{$file}{tb} . "/$flen ";
+    next if $flen == 0 or $flen == $$logs{$file}{len};
+    $$logs{$file}{len} = $flen;
+
+    # should be something new to read - open file if required
+    unless (defined $$logs{$file}{fh}) {
+      sysopen($$logs{$file}{fh}, $file, O_RDONLY | O_NONBLOCK);
+      sysseek($$logs{$file}{fh}, -$blocksize, 2);
+      $$logs{$file}{tb} = $flen - $blocksize;
+    }
+
+    $delay = 0 if getfromfile($$logs{$file});
+  }
+
+#  addstr(1,0,$status);
+
+  if ($alarmed) {
+    redraw();
+    $alarmed = 0;
+    alarm $alarm;
+
+    $tidycount--;
+    if ($tidycount < 1) {
+      tidy($stats);
+      $tidycount = $tidyup;
+    }
+  }
+}
+
+finish();
+
+
+#===============================================================================
+
+sub getfromfile
+{
+  my $finfo = shift;
+  my $str;
+  my $loop = 5;
+
+  my $bytes;
+  my $count = 0;
+#  do {
+    $bytes = sysread($$finfo{fh}, $str, $blocksize);
+    $$finfo{buf} .= $str;
+    $$finfo{tb} += $bytes;
+
+    my $pos = 0;
+    while ((my $nl = index($$finfo{buf}, "\n", $pos)) > -1) {
+      my $line = substr($$finfo{buf}, $pos, $nl - $pos);
+      chomp $line;
+
+      addline($line);
+    
+      $pos = $nl + 1;
+    }
+
+    $$finfo{buf} = substr($$finfo{buf}, $pos);
+#  } while ($count++ < $loop and $bytes > 0 and !$alarmed);
+
+  return length($$finfo{buf});
+}
+
+
+#===============================================================================
 
 sub addline
 {
   my $line = shift;
+  my @bits;
+  my ($date, $time, $timezone);
+
+  loglinehook(\$line);
 
   @bits = split(/\s+/, $line);
   ($date, $time, $timezone, @bits) = @bits;
@@ -129,34 +250,20 @@ sub addline
 }
 
 
+#===============================================================================
+
 sub sig
 {
   my $signame = shift;
 
   $sig_winch = 1 if $signame eq 'WINCH';
-
-  if ($signame eq 'ALRM' or $signame eq 'WINCH') {
-    if ($redraw > 0) {
-      $redraw = 2;
-    } else {
-      redraw();
-    }
-
-    if ($signame eq 'ALRM') {
-      $tidycount--;
-      if ($tidycount < 1) {
-        tidy($stats);
-        $tidycount = $tidyup;
-      }
-
-      alarm $alarm;
-    }
-
-    return;
-  }
+  $alarmed = 1 if $signame eq 'ALRM';
 
   finish() if $signame eq 'INT';
 }
+
+
+#===============================================================================
 
 sub finish
 {
@@ -164,8 +271,13 @@ sub finish
   exit(0);
 }
 
+
+#===============================================================================
+
 sub redraw
 {
+  local *TTY;
+
   if ($sig_winch) {
     del_windows($screen);
     if (defined &TIOCGWINSZ) {
@@ -196,6 +308,9 @@ sub redraw
   refresh();
 }
 
+
+#===============================================================================
+
 sub tidy
 {
   my $s = shift;
@@ -203,7 +318,7 @@ sub tidy
   my $numperstat = 10;
   my $longesttime = 300; # remove stats if last message over 5 mins ago
   my $preservetime = 300; # preserve full message info for 5 mins
-  my $preservenum = 5; # preserve 5 messages for each stat
+  my $preservenum = 5; # preserve at least 5 messages for each stat
 
   my $t = time() - $longesttime;
   my $pt = time() - $preservetime;
@@ -251,14 +366,23 @@ sub tidy
 
 }
 
+
+#===============================================================================
+
 sub screen_init
 {
 #  initscr();
-  open(TERMFD, "+<", "/dev/tty");
-  $$screen{terminal} = newterm($ENV{TERM}, *TERMFD, *TERMFD);
+  my $termifd;
+  my $termofd;
+
+  sysopen($termifd, "/dev/tty", O_RDONLY | O_NONBLOCK);
+  sysopen($termofd, "/dev/tty", O_WRONLY);
+  $$screen{terminal} = newterm($ENV{TERM}, $termofd, $termifd);
+  $$screen{terminfd} = $termifd;
+  $$screen{termoutfd} = $termofd;
   cbreak();
   noecho();
-  halfdelay(10);
+#  halfdelay(0);
 
   # turn the cursor off; don't care where it is left
   curs_set(0);
@@ -269,10 +393,16 @@ sub screen_init
   init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
 }
 
+
+#===============================================================================
+
 sub screen_end
 {
   endwin();
 }
+
+
+#===============================================================================
 
 sub add_windows
 {
@@ -357,6 +487,9 @@ sub add_windows
   return $screen;
 }
 
+
+#===============================================================================
+
 sub del_windows
 {
   my $screen = shift;
@@ -365,6 +498,9 @@ sub del_windows
     delwin($$s{window});
   }
 }
+
+
+#===============================================================================
 
 sub draw_window
 {
@@ -405,6 +541,28 @@ sub draw_window
   }
 
   refresh($$s{window});
+}
+
+
+#===============================================================================
+
+sub loglinehook
+{
+  my $lref = shift;
+
+  my %months = ("Jan" => "01", "Feb" => "02", "Mar" => "03", "Apr" => "04",
+                "May" => "05", "Jun" => "06", "Jul" => "07", "Aug" => "08",
+                "Sep" => "09", "Oct" => "10", "Nov" => "11", "Dec" => "12");
+
+  my @d = localtime;
+  my $year = $d[5] + 1900;
+
+  if ($$lref =~ /^(\w{3}) ([0-9 ]{2}) (\d\d:\d\d:\d\d) (\w+) exim\[\d+\]: (.*)$/) {
+    my ($mon, $day, $time, $host, $log) = ($1, $2, $3, $4, $5);
+    $mon = $months{$mon};
+    $day =~ s/^\s/0/;
+    $$lref = "$year-$mon-$day $time +0000 $log";
+  }
 }
 
 
