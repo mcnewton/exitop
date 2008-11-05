@@ -9,69 +9,107 @@
 use strict;
 use Data::Dumper;
 use Curses;
+#use Curses::Form;
 use Fcntl;
 
 $SIG{INT} = \&sig;
 $SIG{ALRM} = \&sig;
 $SIG{WINCH} = \&sig;
 
+# Flags for the sighandler - $redraw is set if we should redraw
+# the screen (ALRM signal). $sig_winch is set if the terminal has
+# changed size (WINCH signal)
 my $redraw = 0;
+my $sig_winch = 0;
+
+# $alarm is how often to trigger the main alarm that refreshes the
+# screen and the data structure tidy-up process.
 my $alarm = 1;
 my $alarmed = 0;
-my $sig_winch = 0;
+
+# Memory structures are tidied up every $tidyup times when the
+# alarm has sounded.
 my $tidyup = 10;
-my $tidycount = 0;
+my $tidycount = 0; # Counter for current state.
+
+# Blocksize for how much logfile to try and read in one go. Set it
+# too small, and the program slows up; too big and the programs
+# slows up _and_ eats up memory. 1M seems about right here.
 my $blocksize = 1024*1024;
 
-alarm $alarm;
+# Highlight entries on screen if they have been around for this
+# many seconds. Probably the same amount of time as the expire
+# period.
+my $highlightafter = 300;
 
-my $debug = 0;
-my $highlightafter = 300; # highlight entries after 5 minutes
+# Keyboard input handling
+use constant KB_MAIN  => 0;
+use constant KB_INPUT => 1;
+my $kbmode = [KB_MAIN, undef];
 
+# $stats contains the current general statistics for log lines
+# (e.g. "how many from domains of leicester.ac.uk have we seen?"),
+# whereas $messages contains more full information for a selection
+# of complete messages, tied to $stats.
 my $stats = {};
 my $messages = {};
 
+# Set up the alarm, which is used for screen redraws.
+alarm $alarm;
+
+# Screen and curses setup - $screen contains information about the
+# windows we are currently displaying.
 my $screen = {};
 screen_init();
 add_windows($screen);
-addstr(0,0, "exitop 0.01");
 redraw();
 
-# setup bitmaps for select, to watch stdin and keypresses
+# Set up bitmaps for select, to watch stdin and /dev/tty for
+# keyboard input.
 my $srin = "";
 my $srout;
-vec($srin, fileno(STDIN), 1) = 1;
 vec($srin, fileno($$screen{terminfd}), 1) = 1;
 
+# CLOSE STDIN IF A TTY, OTTHERWISE WATCH IN SELECT
+********************************************************************************
+********************************************************************************
+********************************************************************************
+********************************************************************************
+vec($srin, fileno(STDIN), 1) = 1;
+
+# If STDIN is not non-blocking, then things lock up as curses
+# seems to make select think there is data on STDIN when there
+# really is not! :(
 if (!fcntl(STDIN, F_SETFL, O_NONBLOCK)) {
   screen_end();
   die "cannot set STDIN to non-blocking mode";
 }
 
-#$$logs{"-"} = {"fn" => fileno(STDIN), "fh" => *STDIN{IO}, "buf" => ""};
-
-# hash of all files to watch - contains:
-#  key: filename
-#  fh - filehandle (or undef if not open)
-#  len - file size
-#  buf - stuff read from file but not yet processed
-
+# $logs is a hash of all log files to watch - contains:
+#  key: filename of log file
+#  value: hash with:
+#         fh - filehandle (or undef if not open)
+#         len - file size (or undef if not open)
+#         buf - stuff read from file but not yet processed
 my $logs = {};
+
+# Set up $logs for each specified input log file.
 foreach my $file (@ARGV) {
   if (! -r $file) {
     die "cannot read file $file";
   }
   next if defined($$logs{$file});
-
   $$logs{$file} = {buf => "", fh => undef, len => undef, tb => 0};
-#  my $fh;
-#  sysopen($fh, $file, O_RDONLY | O_NONBLOCK);
-#  $$logs{$file}{fh} = $fh;
-#  $$logs{$file}{fn} = fileno($fh);
 }
 
+# If nothing is happening, $delay will be set to $alarm so that
+# we aren't spinning around select.
 my $delay = 0;
 
+# Main program loop - first select on tty/stdin input, then test
+# each logfile to see if it has grown, in which case process more
+# data from it. Finally, redraw the screen if the alarm has
+# triggered.
 while (1) {
 # check for keypresses or stdin input
   my $n = select($srout = $srin, undef, undef, $delay);
@@ -82,9 +120,8 @@ while (1) {
 
   if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
     my $key = getch();
-    addstr(0, 70, $key) unless $key == -1;
-    last if $key eq 'q';
-    redraw() if $key eq chr(12);
+#    addstr(0, 70, $key) unless $key == -1;
+    handle_key($key) unless $key == -1;
   }
 
   if (vec($srout, fileno(STDIN), 1) == 1) {
@@ -92,19 +129,16 @@ while (1) {
     addline($line);
   }
 
-  my $status = "";
-
   foreach my $file (keys %$logs) {
     my @st = stat($file);
     my $flen = $st[7];
 
-    # skip this file if length is 0, or unchanged
+    # Skip this file if length is 0, or unchanged.
     $$logs{$file}{len} = $flen unless defined $$logs{$file}{len};
-    $status .= "$file:" . $$logs{$file}{tb} . "/$flen ";
     next if $flen == 0 or $flen == $$logs{$file}{len};
     $$logs{$file}{len} = $flen;
 
-    # should be something new to read - open file if required
+    # Should be something new to read - open file if required.
     unless (defined $$logs{$file}{fh}) {
       sysopen($$logs{$file}{fh}, $file, O_RDONLY | O_NONBLOCK);
       sysseek($$logs{$file}{fh}, -$blocksize, 2);
@@ -113,8 +147,6 @@ while (1) {
 
     $delay = 0 if getfromfile($$logs{$file});
   }
-
-#  addstr(1,0,$status);
 
   if ($alarmed) {
     redraw();
@@ -134,31 +166,106 @@ finish();
 
 #===============================================================================
 
+sub handle_key
+{
+  my $key = shift;
+
+  if ($$kbmode[0] == KB_MAIN) {
+    finish() if $key eq 'q';
+    redraw() if $key eq chr(12);
+    if ($key eq 'r') {
+      create_input("re: ", 1, 0, COLS(), \&do_regex);
+    }
+  } elsif ($$kbmode[0] == KB_INPUT) {
+    if ($key eq '\n') {
+#      unpost_form($$kbmode[1]);
+      &{$$kbmode[2]}();
+      $kbmode = [KB_MAIN];
+    } else {
+#      form_driver($$kbmode[1], $key);
+      process_input($$kbmode[1], $key);
+    }
+  }
+}
+
+sub create_input
+{
+  my ($title, $y, $x, $width, $callback) = @_;
+
+  my $field = {
+    "code" => "_",
+    "display" => \&display_input,
+    "x" => $x + length($title), # top left of field on screen
+    "y" => $y,
+    "title" => $title,
+    "width" => $width - length($title), # width of field on screen
+    "maxlen" => 100, # max length of data entered
+    "buf" => "",
+    "callback" => $callback,
+    "pos" => 0,
+    "bgchar" => "_",
+    "window" => newwin(1, $width, $y, $x),
+  };
+
+  push @{$$screen{windows}}, $field;
+  display_input($field);
+  redraw();
+
+  $kbmode = [KB_INPUT, \&process_input, $callback];
+
+#  my $field = new_field(1, $width - length($title), $y, $x, 0, 0);
+#  set_field_buffer($field, 0, "hi");
+#  my @fields = ($ {$field}, 0);
+#  my $form = new_form(pack('L!*', @fields));
+#  post_form($form);
+#  $kbmode = [KB_INPUT, $form, $callback];
+}
+
+sub display_input
+{
+  my $f = shift;
+
+  addstr($$f{window}, 0, 0, $$f{title});
+}
+
+
+sub process_input
+{
+  my ($field, $key) = @_;
+
+  addstr(1,0, "**** " . ord($key) . " **");
+}
+
+sub do_regex
+{
+  addstr(1,0, "*****");
+}
+
+
+#===============================================================================
+
 sub getfromfile
 {
   my $finfo = shift;
   my $str;
   my $loop = 5;
 
-  my $bytes;
-  my $count = 0;
-#  do {
-    $bytes = sysread($$finfo{fh}, $str, $blocksize);
-    $$finfo{buf} .= $str;
-    $$finfo{tb} += $bytes;
+  my $bytes = sysread($$finfo{fh}, $str, $blocksize);
 
-    my $pos = 0;
-    while ((my $nl = index($$finfo{buf}, "\n", $pos)) > -1) {
-      my $line = substr($$finfo{buf}, $pos, $nl - $pos);
-      chomp $line;
+  $$finfo{buf} .= $str;
+  $$finfo{tb} += $bytes;
 
-      addline($line);
-    
-      $pos = $nl + 1;
-    }
+  my $pos = 0;
+  while ((my $nl = index($$finfo{buf}, "\n", $pos)) > -1) {
+    my $line = substr($$finfo{buf}, $pos, $nl - $pos);
+    chomp $line;
 
-    $$finfo{buf} = substr($$finfo{buf}, $pos);
-#  } while ($count++ < $loop and $bytes > 0 and !$alarmed);
+    addline($line);
+  
+    $pos = $nl + 1;
+  }
+
+  $$finfo{buf} = substr($$finfo{buf}, $pos);
 
   return length($$finfo{buf});
 }
@@ -245,7 +352,6 @@ sub addline
       $$stats{$$s[0]}{$$s[1]}[2]{$id} = $msg;  # hash of msgs for reference
       $$msg{count}++;
     }
-    print "ref+ $$msg{id} $$msg{count} $$s[0] $$s[1]\n" if $debug;
   }
 }
 
@@ -294,8 +400,8 @@ sub redraw
       screen_init();
     }
     refresh();
-    addstr(0, 30, COLS() . " x " . LINES());
-    addstr(0, 45, getmaxx() . " x " . getmaxy());
+#    addstr(0, 30, COLS() . " x " . LINES());
+#    addstr(0, 45, getmaxx() . " x " . getmaxy());
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -304,7 +410,7 @@ sub redraw
     draw_window($s, $stats);
   }
 
-  addstr(0, 15, COLS() . " x " . LINES());
+#  addstr(0, 15, COLS() . " x " . LINES());
   refresh();
 }
 
@@ -333,10 +439,7 @@ sub tidy
           my $msg = ${$$s{$code}{$data}[2]}{$msgid};
           #${$$s{$code}{$data}[2]}{$msgid}{count}--;
           $$msg{count}--;
-          print "ref_ $$msg{id} $$msg{count} $code $data\n" if $debug;
         }
-        print "del  " . $$s{$code}{$data}[0] . " " . $$s{$code}{$data}[1] .
-              " $code $data\n" if $debug;
         delete $$s{$code}{$data};
         next;
       }
@@ -353,14 +456,12 @@ sub tidy
         if ($$msg{lastseen} < $pt) {
           delete ${$$s{$code}{$data}[2]}{$msgid};
           $$msg{count}--;
-          print "ref- $$msg{id} $$msg{count} $code $data\n" if $debug;
         }
       }
     }
   }
 
   foreach my $m (sort keys %$messages) {
-    print "mesg $m -> (" . $$messages{$m}{count} . ")\n" if $debug;
     delete $$messages{$m} if $$messages{$m}{count} < 1;
   }
 
@@ -387,6 +488,8 @@ sub screen_init
   # turn the cursor off; don't care where it is left
   curs_set(0);
   leaveok(1);
+
+  addstr(0,0, "exitop 0.01");
 
   # set up colours
   start_color();
@@ -506,6 +609,12 @@ sub draw_window
 {
   my ($s, $d) = @_;
   my $colw = 6;
+
+  if ($$s{code} eq "_") {
+    my $disp = $$s{display};
+    return unless defined $disp;
+    return &$disp($s);
+  }
 
   attron($$s{window}, A_BOLD);
   attron($$s{window}, A_REVERSE);
