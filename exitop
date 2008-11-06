@@ -1,40 +1,42 @@
 #! /usr/bin/perl
 #
-# Exitop
-# Matthew Newton
-# 24 October 2008
+#    Name: Exitop
+# Purpose: Summarise exim logs in near real-time
+#  Author: Matthew Newton
+#    Date: 06 November 2008
+
 # $Format:%H% d$
 
 
 use strict;
-use Data::Dumper;
 use Curses;
-#use Curses::Form;
 use Fcntl;
 
+# Try and pull in sys/ioctl.pl so that window resizes are smoother.
+eval { require 'sys/ioctl.ph'; };
+
 $SIG{INT} = \&sig;
-$SIG{ALRM} = \&sig;
 $SIG{WINCH} = \&sig;
 
 # Flags for the sighandler - $redraw is set if we should redraw
 # the screen (ALRM signal). $sig_winch is set if the terminal has
-# changed size (WINCH signal)
+# changed size (WINCH signal).
 my $redraw = 0;
 my $sig_winch = 0;
 
-# $alarm is how often to trigger the main alarm that refreshes the
-# screen and the data structure tidy-up process.
-my $alarm = 1;
-my $alarmed = 0;
+# How long should we sleep for in select if nothing has happened?
+# We need to wake up every now and then to process files we are
+# watching.
+my $sleeptime = 1;
 
-# Memory structures are tidied up every $tidyup times when the
-# alarm has sounded.
+# Memory structures are tidied up every $tidyup times of the main loop.
 my $tidyup = 10;
 my $tidycount = 0; # Counter for current state.
 
 # Blocksize for how much logfile to try and read in one go. Set it
 # too small, and the program slows up; too big and the programs
-# slows up _and_ eats up memory. 1M seems about right here.
+# slows up _and_ eats up memory. 1M seems about right here. Files
+# specified have this much data read at startup.
 my $blocksize = 1024*1024;
 
 # Highlight entries on screen if they have been around for this
@@ -54,12 +56,9 @@ my $kbmode = [KB_MAIN, undef];
 my $stats = {};
 my $messages = {};
 
-# Set up the alarm, which is used for screen redraws.
-alarm $alarm;
-
 # Screen and curses setup - $screen contains information about the
 # windows we are currently displaying.
-my $screen = {};
+my $screen = { cursor => 0 };
 screen_init();
 add_windows($screen);
 redraw();
@@ -70,19 +69,14 @@ my $srin = "";
 my $srout;
 vec($srin, fileno($$screen{terminfd}), 1) = 1;
 
-# CLOSE STDIN IF A TTY, OTTHERWISE WATCH IN SELECT
-********************************************************************************
-********************************************************************************
-********************************************************************************
-********************************************************************************
-vec($srin, fileno(STDIN), 1) = 1;
-
-# If STDIN is not non-blocking, then things lock up as curses
-# seems to make select think there is data on STDIN when there
-# really is not! :(
-if (!fcntl(STDIN, F_SETFL, O_NONBLOCK)) {
-  screen_end();
-  die "cannot set STDIN to non-blocking mode";
+# Close STDIN if is is the terminal, as we open /dev/tty and STDIN
+# would just be confusing. Otherwise, we want to watch it with select.
+my $stdin = undef;
+if (-t STDIN) {
+  close(STDIN);
+} else {
+  vec($srin, fileno(STDIN), 1) = 1;
+  $stdin = {fh => *STDIN{IO}, len => undef, buf => ""};
 }
 
 # $logs is a hash of all log files to watch - contains:
@@ -99,34 +93,36 @@ foreach my $file (@ARGV) {
     die "cannot read file $file";
   }
   next if defined($$logs{$file});
-  $$logs{$file} = {buf => "", fh => undef, len => undef, tb => 0};
+  $$logs{$file} = {buf => "", fh => undef, len => undef};
 }
 
 # If nothing is happening, $delay will be set to $alarm so that
 # we aren't spinning around select.
-my $delay = 0;
+my $delay = $sleeptime;
 
 # Main program loop - first select on tty/stdin input, then test
 # each logfile to see if it has grown, in which case process more
-# data from it. Finally, redraw the screen if the alarm has
-# triggered.
+# data from it. Then refresh the terminal.
+
 while (1) {
-# check for keypresses or stdin input
+  # Check for keypresses or stdin input.
   my $n = select($srout = $srin, undef, undef, $delay);
-  $delay = $alarm;
+  $delay = $sleeptime;
 
   my $v = unpack("b*", $srout) . "    ";
   addstr(0,40, "vec: $v");
+  refresh();
 
   if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
     my $key = getch();
-#    addstr(0, 70, $key) unless $key == -1;
+    addstr(0, 70, $key);# unless $key == -1;
     handle_key($key) unless $key == -1;
   }
 
-  if (vec($srout, fileno(STDIN), 1) == 1) {
-    my $line = <STDIN>;
-    addline($line);
+  if (defined $stdin) {
+    if (vec($srout, fileno(STDIN), 1) == 1) {
+      getfromfile($stdin);
+    }
   }
 
   foreach my $file (keys %$logs) {
@@ -148,16 +144,12 @@ while (1) {
     $delay = 0 if getfromfile($$logs{$file});
   }
 
-  if ($alarmed) {
-    redraw();
-    $alarmed = 0;
-    alarm $alarm;
+  redraw();
 
-    $tidycount--;
-    if ($tidycount < 1) {
-      tidy($stats);
-      $tidycount = $tidyup;
-    }
+  $tidycount--;
+  if ($tidycount < 1) {
+    tidy($stats);
+    $tidycount = $tidyup;
   }
 }
 
@@ -173,9 +165,9 @@ sub handle_key
   if ($$kbmode[0] == KB_MAIN) {
     finish() if $key eq 'q';
     redraw() if $key eq chr(12);
-    if ($key eq 'r') {
-      create_input("re: ", 1, 0, COLS(), \&do_regex);
-    }
+#    if ($key eq 'r') {
+#      create_input("re: ", 1, 0, COLS(), \&do_regex);
+#    }
   } elsif ($$kbmode[0] == KB_INPUT) {
     if ($key eq '\n') {
 #      unpost_form($$kbmode[1]);
@@ -363,7 +355,7 @@ sub sig
   my $signame = shift;
 
   $sig_winch = 1 if $signame eq 'WINCH';
-  $alarmed = 1 if $signame eq 'ALRM';
+#  $alarmed = 1 if $signame eq 'ALRM';
 
   finish() if $signame eq 'INT';
 }
@@ -387,21 +379,16 @@ sub redraw
   if ($sig_winch) {
     del_windows($screen);
     if (defined &TIOCGWINSZ) {
-      open(TTY, "+<", "/dev/tty");
       my $winsize;
-      unless (ioctl(TTY, &TIOCGWINSZ, $winsize="")) {
+      unless (ioctl($$screen{terminfd}, &TIOCGWINSZ, $winsize="")) {
         die sprintf "$0: ioctl TIOCGWINSZ (%08x: $!)\n", &TIOCGWINSZ;
       }
-      close(TTY);
       my ($row, $col, $xpixel, $ypixel) = unpack("S4", $winsize);
       resizeterm($row, $col);
     } else {
-      screen_end();
-      screen_init();
+      endwin();
     }
     refresh();
-#    addstr(0, 30, COLS() . " x " . LINES());
-#    addstr(0, 45, getmaxx() . " x " . getmaxy());
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -410,7 +397,6 @@ sub redraw
     draw_window($s, $stats);
   }
 
-#  addstr(0, 15, COLS() . " x " . LINES());
   refresh();
 }
 
@@ -464,7 +450,6 @@ sub tidy
   foreach my $m (sort keys %$messages) {
     delete $$messages{$m} if $$messages{$m}{count} < 1;
   }
-
 }
 
 
@@ -476,20 +461,21 @@ sub screen_init
   my $termifd;
   my $termofd;
 
-  sysopen($termifd, "/dev/tty", O_RDONLY | O_NONBLOCK);
+  sysopen($termifd, "/dev/tty", O_RDONLY);
   sysopen($termofd, "/dev/tty", O_WRONLY);
   $$screen{terminal} = newterm($ENV{TERM}, $termofd, $termifd);
   $$screen{terminfd} = $termifd;
   $$screen{termoutfd} = $termofd;
   cbreak();
   noecho();
-#  halfdelay(0);
 
   # turn the cursor off; don't care where it is left
-  curs_set(0);
-  leaveok(1);
+  unless ($$screen{cursor} == 1) {
+    curs_set(0);
+    leaveok(1);
+  }
 
-  addstr(0,0, "exitop 0.01");
+  addstr(0,0, "exitop 0.02");
 
   # set up colours
   start_color();
