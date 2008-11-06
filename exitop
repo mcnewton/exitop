@@ -56,6 +56,57 @@ my $kbmode = [KB_MAIN, undef];
 my $stats = {};
 my $messages = {};
 
+# Set up bitmaps for select, to watch stdin and /dev/tty for
+# keyboard input.
+my $srin = "";
+my $srout;
+
+# If STDIN is a tty, then we're happy. If STDIN is a file, then we
+# need to open /dev/tty (TTY), dup STDIN to a new FD, close STDIN,
+# and then open /dev/tty on fd(old STDIN, probably 0).
+
+# This is because of the broken Curses support for newterm on new
+# Perls with PerlIo.
+
+my $stdin = undef; # hashref for STDIN if file
+
+if (! -t STDIN) {
+  open(STDINFILE, "<&STDIN"); # dup STDIN
+  open(TTY, "< /dev/tty");
+  my $sifd = fileno(STDIN);
+  close STDIN;
+
+  open(STDIN, "<&TTY");
+  if (fileno(STDIN) != $sifd) {
+    # Didn't work the first time - one last try.
+    close STDIN;
+    open(STDIN, "<&TTY");
+    die "can't reopen STDIN on fd $sifd" unless fileno(STDIN) == $sifd;
+  }
+
+  # Add the incoming file to the select vector to watch, and set
+  # up the data structure for later.   
+  vec($srin, fileno(STDINFILE), 1) = 1;
+  $stdin = {fh => *STDINFILE{IO}, fd => fileno(STDINFILE),
+            len => undef, buf => ""};
+}
+
+if (! -t STDIN) {
+  die "Sorry, something has gone wrong and STDIN is not a TTY!";
+}
+
+# This code commented out because of broken newterm on Curses and
+# Perl with PerlIo:
+# Close STDIN if is is the terminal, as we open /dev/tty and STDIN
+# would just be confusing. Otherwise, we want to watch it with select.
+#my $stdin = undef;
+#if (-t STDIN) {
+#  close(STDIN);
+#} else {
+#  vec($srin, fileno(STDIN), 1) = 1;
+#  $stdin = {fh => *STDIN{IO}, len => undef, buf => ""};
+#}
+
 # Screen and curses setup - $screen contains information about the
 # windows we are currently displaying.
 my $screen = { cursor => 0 };
@@ -63,21 +114,9 @@ screen_init();
 add_windows($screen);
 redraw();
 
-# Set up bitmaps for select, to watch stdin and /dev/tty for
-# keyboard input.
-my $srin = "";
-my $srout;
+# Add TTY to select vector to watch
 vec($srin, fileno($$screen{terminfd}), 1) = 1;
 
-# Close STDIN if is is the terminal, as we open /dev/tty and STDIN
-# would just be confusing. Otherwise, we want to watch it with select.
-my $stdin = undef;
-if (-t STDIN) {
-  close(STDIN);
-} else {
-  vec($srin, fileno(STDIN), 1) = 1;
-  $stdin = {fh => *STDIN{IO}, len => undef, buf => ""};
-}
 
 # $logs is a hash of all log files to watch - contains:
 #  key: filename of log file
@@ -120,7 +159,7 @@ while (1) {
   }
 
   if (defined $stdin) {
-    if (vec($srout, fileno(STDIN), 1) == 1) {
+    if (vec($srout, $$stdin{fd}, 1) == 1) {
       getfromfile($stdin);
     }
   }
@@ -137,8 +176,8 @@ while (1) {
     # Should be something new to read - open file if required.
     unless (defined $$logs{$file}{fh}) {
       sysopen($$logs{$file}{fh}, $file, O_RDONLY | O_NONBLOCK);
+      # Skip back one blocksize to get a bit of recent history.
       sysseek($$logs{$file}{fh}, -$blocksize, 2);
-      $$logs{$file}{tb} = $flen - $blocksize;
     }
 
     $delay = 0 if getfromfile($$logs{$file});
@@ -245,7 +284,6 @@ sub getfromfile
   my $bytes = sysread($$finfo{fh}, $str, $blocksize);
 
   $$finfo{buf} .= $str;
-  $$finfo{tb} += $bytes;
 
   my $pos = 0;
   while ((my $nl = index($$finfo{buf}, "\n", $pos)) > -1) {
@@ -457,15 +495,23 @@ sub tidy
 
 sub screen_init
 {
-#  initscr();
-  my $termifd;
-  my $termofd;
 
-  sysopen($termifd, "/dev/tty", O_RDONLY);
-  sysopen($termofd, "/dev/tty", O_WRONLY);
-  $$screen{terminal} = newterm($ENV{TERM}, $termofd, $termifd);
-  $$screen{terminfd} = $termifd;
-  $$screen{termoutfd} = $termofd;
+# OK - for the newterm-doesnt-exist-hack again:
+
+#  my $termifd;
+#  my $termofd;
+#  sysopen($termifd, "/dev/tty", O_RDONLY);
+#  sysopen($termofd, "/dev/tty", O_WRONLY);
+#  $$screen{terminal} = newterm($ENV{TERM}, $termofd, $termifd);
+#  $$screen{terminfd} = $termifd;
+#  $$screen{termoutfd} = $termofd;
+
+  $$screen{terminal} = undef; # Actually, not presently used elsewhere.
+  $$screen{terminfd} = *STDIN{IO};
+  $$screen{termoutfd} = *STDOUT{IO};
+  initscr();
+
+# And back to our regular programming...
   cbreak();
   noecho();
 
@@ -475,7 +521,7 @@ sub screen_init
     leaveok(1);
   }
 
-  addstr(0,0, "exitop 0.02");
+  addstr(0,0, "exitop 0.02.1");
 
   # set up colours
   start_color();
