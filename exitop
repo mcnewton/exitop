@@ -158,7 +158,7 @@ while (1) {
 
   if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
     my $key = getch();
-    addstr(0, 70, ord($key));# unless $key == -1;
+#    addstr(0, 70, ord($key));# unless $key == -1;
     handle_key($key) unless $key == -1;
   }
 
@@ -212,6 +212,7 @@ sub handle_key
                                           or $key eq chr(16);
   $$screen{page} += 1 if $key == KEY_DOWN or $key eq "j";
   $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
+  $$screen{page} = 0 if $key == KEY_HOME;
 
 # Standard mode keypresses:
   if ($$kbmode[0] == KB_MAIN) {
@@ -677,7 +678,8 @@ sub draw_window
   attron($$s{window}, A_BOLD);
   attron($$s{window}, A_REVERSE);
   hline($$s{window}, 0, 0, " ", $$s{width});
-  addstr($$s{window}, 0, $colw, $$s{title});
+  addstr($$s{window}, 0, $colw, $$s{title} . " [" .
+                                scalar keys(%{$$d{$$s{code}}}) . "]");
   attroff($$s{window}, A_REVERSE);
   attroff($$s{window}, A_BOLD);
 
