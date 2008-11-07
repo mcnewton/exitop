@@ -114,9 +114,11 @@ screen_init();
 add_windows($screen);
 redraw();
 
+# Paging - we start at the top!
+$$screen{page} = 0;
+
 # Add TTY to select vector to watch
 vec($srin, fileno($$screen{terminfd}), 1) = 1;
-
 
 # $logs is a hash of all log files to watch - contains:
 #  key: filename of log file
@@ -148,13 +150,13 @@ while (1) {
   my $n = select($srout = $srin, undef, undef, $delay);
   $delay = $sleeptime;
 
-  my $v = unpack("b*", $srout) . "    ";
-  addstr(0,40, "vec: $v");
-  refresh();
+#  my $v = unpack("b*", $srout) . "    ";
+#  addstr(0,40, "vec: $v");
+#  refresh();
 
   if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
     my $key = getch();
-    addstr(0, 70, $key);# unless $key == -1;
+#    addstr(0, 70, $key);# unless $key == -1;
     handle_key($key) unless $key == -1;
   }
 
@@ -201,14 +203,21 @@ sub handle_key
 {
   my $key = shift;
 
+# Global keypresses, does not matter which mode:
+  $$screen{page} += $$screen{wheight} - 2 if $key == KEY_NPAGE;
+  $$screen{page} -= $$screen{wheight} - 2 if $key == KEY_PPAGE;
+
+# Standard mode keypresses:
   if ($$kbmode[0] == KB_MAIN) {
     finish() if $key eq 'q';
     redraw() if $key eq chr(12);
-#    if ($key eq 'r') {
-#      create_input("re: ", 1, 0, COLS(), \&do_regex);
-#    }
+    if ($key eq ':') {
+      create_input(": ", 1, 0, COLS(), \&do_cmd);
+    }
+
+# Line input mode keypresses:
   } elsif ($$kbmode[0] == KB_INPUT) {
-    if ($key eq '\n') {
+    if ($key eq "\n") {
 #      unpost_form($$kbmode[1]);
       &{$$kbmode[2]}();
       $kbmode = [KB_MAIN];
@@ -267,7 +276,7 @@ sub process_input
   addstr(1,0, "**** " . ord($key) . " **");
 }
 
-sub do_regex
+sub do_cmd
 {
   addstr(1,0, "*****");
 }
@@ -435,6 +444,12 @@ sub redraw
     draw_window($s, $stats);
   }
 
+  # Show how many lines we are skipping:
+  
+  attron(COLOR_PAIR(2)) if $$screen{page} > 0;
+  addstr(0,15, "s: " . $$screen{page} . " ");
+  attroff(COLOR_PAIR(2)) if $$screen{page} > 0;
+
   refresh();
 }
 
@@ -514,6 +529,7 @@ sub screen_init
 # And back to our regular programming...
   cbreak();
   noecho();
+  keypad(1);
 
   # turn the cursor off; don't care where it is left
   unless ($$screen{cursor} == 1) {
@@ -526,6 +542,7 @@ sub screen_init
   # set up colours
   start_color();
   init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
+  init_pair(2, COLOR_RED, COLOR_BLACK); # colour to highlight stale entries
 }
 
 
@@ -547,6 +564,7 @@ sub add_windows
   $$screen{windows} = [];
   
   my $sh = int((LINES()-2)/4);
+  $$screen{wheight} = $sh;
 
   my $line = 2;
 
@@ -648,6 +666,8 @@ sub draw_window
     return &$disp($s);
   }
 
+  $$screen{page} = 0 if $$screen{page} < 0;
+
   attron($$s{window}, A_BOLD);
   attron($$s{window}, A_REVERSE);
   hline($$s{window}, 0, 0, " ", $$s{width});
@@ -660,9 +680,13 @@ sub draw_window
 
   if (defined $d and defined $$d{$$s{code}}) {
     # fill data in window
-    my $line = 1;
+    my $line = 1; # Line number in window (0 is title).
+    my $count = -1; # Lines of data we have seen (for paging).
     foreach my $data (sort { $$d{$$s{code}}{$b}[0] <=> $$d{$$s{code}}{$a}[0] }
                       keys %{$$d{$$s{code}}}) {
+      $count++;
+      next if $count < $$screen{page};
+
       my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
       my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
       addstr($$s{window}, $line, 0, $num);
@@ -671,13 +695,15 @@ sub draw_window
         attron($$s{window}, COLOR_PAIR(1));
         $off = 1;
       }
-      addstr($$s{window}, $line++, $colw, $dstr);
+      addstr($$s{window}, $line, $colw, $dstr);
       attroff($$s{window}, COLOR_PAIR(1)) if $off;
 
+      $line++;
       last if $line > $$s{height};
     }
     while ($line < $$s{height}) {
-      addstr($$s{window}, $line++, 0, " " x $$s{width});
+      addstr($$s{window}, $line, 0, " " x $$s{width});
+      $line++;
     }
   }
 
