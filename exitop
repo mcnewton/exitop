@@ -210,29 +210,55 @@ sub handle_key
                                           or $key eq chr(14);
   $$screen{page} -= $$screen{wheight} - 2 if $key == KEY_PPAGE
                                           or $key eq chr(16);
-  $$screen{page} += 1 if $key == KEY_DOWN or $key eq "j";
-  $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
-  $$screen{page} = 0 if $key == KEY_HOME;
 
 # Standard mode keypresses:
   if ($$kbmode[0] == KB_MAIN) {
     finish() if $key eq 'q';
     redraw() if $key eq chr(12);
-#    if ($key eq ':') {
-#      create_input(": ", 1, 0, COLS(), \&do_cmd);
-#    }
+    $$screen{page} += 1 if $key == KEY_DOWN or $key eq "j";
+    $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
+    $$screen{page} = 0 if $key == KEY_HOME;
+    if ($key eq ':') {
+      create_input(":", 1, 0, COLS(), \&do_cmd);
+    }
+    if ($key eq 'h') {
+#      create_input("highlight:", 1, 0, COLS(), \&do_cmd);
+      create_input("highlight:", 1, 0, 20, \&do_cmd);
+    }
 
 # Line input mode keypresses:
   } elsif ($$kbmode[0] == KB_INPUT) {
     if ($key eq "\n") {
 #      unpost_form($$kbmode[1]);
-      &{$$kbmode[2]}();
+      my $buf = finish_input($$kbmode[1]);
+      &{$$kbmode[2]}($buf);
       $kbmode = [KB_MAIN];
     } else {
 #      form_driver($$kbmode[1], $key);
       process_input($$kbmode[1], $key);
     }
   }
+}
+
+sub finish_input
+{
+  my $f = shift;
+
+  my $buf = $$f{buf};
+  cursor(0);
+  addstr($$f{window}, 0, 0, " " x $$f{width});
+  refresh($$f{window});
+  delwin($$f{window});
+
+  # There should only be one occurance of $f in $$screen{windows} - but this
+  # code is probably broken and could leave some around if >1 ?
+  foreach my $w (0..$#{$$screen{windows}}) {
+    if ($$screen{windows}[$w] == $f) {
+      delete $$screen{windows}[$w];
+    }
+  }
+
+  return $buf;
 }
 
 sub create_input
@@ -242,23 +268,25 @@ sub create_input
   my $field = {
     "code" => "_",
     "display" => \&display_input,
-    "x" => $x + length($title), # top left of field on screen
+    "x" => $x, # top left of field on screen
     "y" => $y,
+    "fx" => $x + length($title), # top left of field on screen
     "title" => $title,
-    "width" => $width - length($title), # width of field on screen
+    "width" => $width, # width of title + field
+    "fwidth" => $width - length($title), # width of field on screen
     "maxlen" => 100, # max length of data entered
     "buf" => "",
     "callback" => $callback,
     "pos" => 0,
-    "bgchar" => "_",
+#    "bgchar" => "_",
     "window" => newwin(1, $width, $y, $x),
   };
 
+  cursor(1);
   push @{$$screen{windows}}, $field;
   display_input($field);
-  redraw();
 
-  $kbmode = [KB_INPUT, \&process_input, $callback];
+  $kbmode = [KB_INPUT, $field, $callback];
 
 #  my $field = new_field(1, $width - length($title), $y, $x, 0, 0);
 #  set_field_buffer($field, 0, "hi");
@@ -272,7 +300,20 @@ sub display_input
 {
   my $f = shift;
 
-  addstr($$f{window}, 0, 0, $$f{title});
+  my $ds = $$f{buf};
+  my $cp = $$f{pos};
+
+# This sub needs some work...
+
+  if ($$f{pos} > ($$f{fwidth}-1)) {
+    $ds = substr($$f{buf}, -$$f{fwidth}+1);
+    $cp = $$f{fwidth}-1;
+  }
+
+  addstr($$f{window}, 0, 0, $$f{title} . $ds . " ");
+  noutrefresh($$f{window});
+  setsyx($$f{y}, $$f{fx} + $cp);
+  doupdate();
 }
 
 
@@ -280,12 +321,50 @@ sub process_input
 {
   my ($field, $key) = @_;
 
-  addstr(1,0, "**** " . ord($key) . " **");
+#  addstr(0,40, "** " . ord($key) . " **");
+  if ($key == 0 and ord($key) > 31 and ord($key) < 127) {
+    # printable char
+    unless (length($$field{buf}) >= $$field{maxlen}) {
+      $$field{buf} = substr($$field{buf}, 0, $$field{pos}) . $key .
+                     substr($$field{buf}, $$field{pos});
+      $$field{pos}++;
+    }
+  }
+  elsif ($key == 0 and ord($key) == 21) {
+    # ctrl-u : clear buffer
+    $$field{pos} = 0;
+    $$field{buf} = "";
+    addstr($$field{window}, 0, 0, " " x $$field{width});
+  }
+  elsif ($key == KEY_BACKSPACE) {
+    unless ($$field{pos} < 1) {
+      $$field{buf} = substr($$field{buf}, 0, $$field{pos} - 1) .
+                     substr($$field{buf}, $$field{pos});
+      $$field{pos}--;
+    }
+  }
+  elsif ($key == KEY_LEFT) {
+    $$field{pos}--; $$field{pos} = 0 if $$field{pos} < 0;
+  }
+  elsif ($key == KEY_RIGHT) {
+    $$field{pos}++;
+    $$field{pos} = length($$field{buf}) if $$field{pos} > length($$field{buf});
+  }
+  elsif ($key == KEY_HOME) {
+    $$field{pos} = 0;
+  }
+  elsif ($key == KEY_END) {
+    $$field{pos} = length($$field{buf});
+  }
+
+  display_input($field);
 }
 
 sub do_cmd
 {
-  addstr(1,0, "*****");
+  my $in = shift;
+
+  addstr(1,0, "***** $in *****");
 }
 
 
@@ -430,6 +509,9 @@ sub redraw
 {
   local *TTY;
 
+  my ($cx, $cy);
+  getsyx($cy, $cx) if $$screen{cursor};
+
   if ($sig_winch) {
     del_windows($screen);
     if (defined &TIOCGWINSZ) {
@@ -442,7 +524,7 @@ sub redraw
     } else {
       endwin();
     }
-    refresh();
+#    refresh();
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -457,7 +539,10 @@ sub redraw
   addstr(0,15, "s: " . $$screen{page} . " ");
   attroff(COLOR_PAIR(2)) if $$screen{page} > 0;
 
-  refresh();
+  #refresh();
+  noutrefresh();
+  setsyx($cy, $cx) if $$screen{cursor};
+  doupdate();
 }
 
 
@@ -539,10 +624,11 @@ sub screen_init
   keypad(1);
 
   # turn the cursor off; don't care where it is left
-  unless ($$screen{cursor} == 1) {
-    curs_set(0);
-    leaveok(1);
-  }
+  cursor();
+#  unless ($$screen{cursor} == 1) {
+#    curs_set(0);
+#    leaveok(1);
+#  }
 
   addstr(0,0, "exitop " . VERSION);
 
@@ -558,6 +644,22 @@ sub screen_init
 sub screen_end
 {
   endwin();
+}
+
+
+#===============================================================================
+
+sub cursor
+{
+  my $o = shift;
+
+  my $oc = $$screen{cursor};
+  $$screen{cursor} = $o if defined $o;
+
+  return unless !defined $o or $oc != $o;
+
+  curs_set($$screen{cursor});
+  leaveok(1 - $$screen{cursor});
 }
 
 
@@ -741,4 +843,4 @@ sub loglinehook
 }
 
 
-# vi:expandtab:sw=2:ts=2:comments=:si:commentstring=
+# vi:expandtab:sw=2:ts=2:tw=80:comments=:si:commentstring=
