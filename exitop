@@ -158,7 +158,7 @@ while (1) {
 
   if (vec($srout, fileno($$screen{terminfd}), 1) == 1) {
     my $key = getch();
-#    addstr(0, 70, $key);# unless $key == -1;
+    addstr(0, 70, ord($key));# unless $key == -1;
     handle_key($key) unless $key == -1;
   }
 
@@ -206,8 +206,12 @@ sub handle_key
   my $key = shift;
 
 # Global keypresses, does not matter which mode:
-  $$screen{page} += $$screen{wheight} - 2 if $key == KEY_NPAGE;
-  $$screen{page} -= $$screen{wheight} - 2 if $key == KEY_PPAGE;
+  $$screen{page} += $$screen{wheight} - 2 if $key == KEY_NPAGE
+                                          or $key eq chr(14);
+  $$screen{page} -= $$screen{wheight} - 2 if $key == KEY_PPAGE
+                                          or $key eq chr(16);
+  $$screen{page} += 1 if $key == KEY_DOWN or $key eq "j";
+  $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
 
 # Standard mode keypresses:
   if ($$kbmode[0] == KB_MAIN) {
