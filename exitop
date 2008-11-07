@@ -12,6 +12,8 @@ use strict;
 use Curses;
 use Fcntl;
 
+use constant VERSION => '0.03';
+
 # Try and pull in sys/ioctl.pl so that window resizes are smoother.
 eval { require 'sys/ioctl.ph'; };
 
@@ -211,9 +213,9 @@ sub handle_key
   if ($$kbmode[0] == KB_MAIN) {
     finish() if $key eq 'q';
     redraw() if $key eq chr(12);
-    if ($key eq ':') {
-      create_input(": ", 1, 0, COLS(), \&do_cmd);
-    }
+#    if ($key eq ':') {
+#      create_input(": ", 1, 0, COLS(), \&do_cmd);
+#    }
 
 # Line input mode keypresses:
   } elsif ($$kbmode[0] == KB_INPUT) {
@@ -537,7 +539,7 @@ sub screen_init
     leaveok(1);
   }
 
-  addstr(0,0, "exitop 0.02.1");
+  addstr(0,0, "exitop " . VERSION);
 
   # set up colours
   start_color();
