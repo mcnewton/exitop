@@ -49,7 +49,7 @@ my $highlightafter = 300;
 # Keyboard input handling
 use constant KB_MAIN  => 0;
 use constant KB_INPUT => 1;
-my $kbmode = [KB_MAIN, undef];
+my $kbmode = [KB_MAIN];
 
 # $stats contains the current general statistics for log lines
 # (e.g. "how many from domains of leicester.ac.uk have we seen?"),
@@ -114,10 +114,12 @@ if (! -t STDIN) {
 my $screen = { cursor => 0 };
 screen_init();
 add_windows($screen);
-redraw();
 
 # Paging - we start at the top!
 $$screen{page} = 0;
+$$screen{highlight} = {
+#  "le.ac.uk" => 1,
+  };
 
 # Add TTY to select vector to watch
 vec($srin, fileno($$screen{terminfd}), 1) = 1;
@@ -146,6 +148,7 @@ my $delay = $sleeptime;
 # Main program loop - first select on tty/stdin input, then test
 # each logfile to see if it has grown, in which case process more
 # data from it. Then refresh the terminal.
+redraw();
 
 while (1) {
   # Check for keypresses or stdin input.
@@ -219,19 +222,19 @@ sub handle_key
     $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
     $$screen{page} = 0 if $key == KEY_HOME;
     if ($key eq ':') {
-      create_input(":", 1, 0, COLS(), \&do_cmd);
+      create_input(":", 1, 0, COLS(), \&do_cmd, ":");
     }
     if ($key eq 'h') {
-#      create_input("highlight:", 1, 0, COLS(), \&do_cmd);
-      create_input("highlight:", 1, 0, 20, \&do_cmd);
+      create_input("highlight:", 1, 0, COLS(), \&do_cmd, "hl");
+#      create_input("highlight:", 1, 0, 20, \&do_cmd);
     }
 
 # Line input mode keypresses:
   } elsif ($$kbmode[0] == KB_INPUT) {
     if ($key eq "\n") {
 #      unpost_form($$kbmode[1]);
-      my $buf = finish_input($$kbmode[1]);
-      &{$$kbmode[2]}($buf);
+      finish_input($$kbmode[1]);
+#      &{$$kbmode[2]}($buf);
       $kbmode = [KB_MAIN];
     } else {
 #      form_driver($$kbmode[1], $key);
@@ -240,30 +243,12 @@ sub handle_key
   }
 }
 
-sub finish_input
-{
-  my $f = shift;
 
-  my $buf = $$f{buf};
-  cursor(0);
-  addstr($$f{window}, 0, 0, " " x $$f{width});
-  refresh($$f{window});
-  delwin($$f{window});
-
-  # There should only be one occurance of $f in $$screen{windows} - but this
-  # code is probably broken and could leave some around if >1 ?
-  foreach my $w (0..$#{$$screen{windows}}) {
-    if ($$screen{windows}[$w] == $f) {
-      delete $$screen{windows}[$w];
-    }
-  }
-
-  return $buf;
-}
+#-------------------------------------------------------------------------------
 
 sub create_input
 {
-  my ($title, $y, $x, $width, $callback) = @_;
+  my ($title, $y, $x, $width, $callback, $cbp) = @_;
 
   my $field = {
     "code" => "_",
@@ -277,6 +262,7 @@ sub create_input
     "maxlen" => 100, # max length of data entered
     "buf" => "",
     "callback" => $callback,
+    "cbp" => $cbp, # first parameter to callback function
     "pos" => 0,
 #    "bgchar" => "_",
     "window" => newwin(1, $width, $y, $x),
@@ -286,7 +272,7 @@ sub create_input
   push @{$$screen{windows}}, $field;
   display_input($field);
 
-  $kbmode = [KB_INPUT, $field, $callback];
+  $kbmode = [KB_INPUT, $field];
 
 #  my $field = new_field(1, $width - length($title), $y, $x, 0, 0);
 #  set_field_buffer($field, 0, "hi");
@@ -295,6 +281,37 @@ sub create_input
 #  post_form($form);
 #  $kbmode = [KB_INPUT, $form, $callback];
 }
+
+
+#-------------------------------------------------------------------------------
+
+sub finish_input
+{
+  my $f = shift;
+
+  my $buf = $$f{buf};
+  my $callback = $$f{callback};
+  my $cbp = $$f{cbp};
+  cursor(0);
+  addstr($$f{window}, 0, 0, " " x $$f{width});
+  refresh($$f{window});
+  delwin($$f{window});
+
+  # There should only be one occurance of $f in $$screen{windows} - but this
+  # code is probably broken and could leave some around if >1 ?
+  foreach my $w (0..$#{$$screen{windows}}) {
+    if ($$screen{windows}[$w] == $f) {
+      delete $$screen{windows}[$w];
+    }
+  }
+
+  &{$callback}($cbp, $buf);
+
+  return $buf;
+}
+
+
+#-------------------------------------------------------------------------------
 
 sub display_input
 {
@@ -317,12 +334,14 @@ sub display_input
 }
 
 
+#-------------------------------------------------------------------------------
+
 sub process_input
 {
   my ($field, $key) = @_;
 
 #  addstr(0,40, "** " . ord($key) . " **");
-  if ($key == 0 and ord($key) > 31 and ord($key) < 127) {
+  if ($key >= 0 and $key < 10 and ord($key) > 31 and ord($key) < 127) {
     # printable char
     unless (length($$field{buf}) >= $$field{maxlen}) {
       $$field{buf} = substr($$field{buf}, 0, $$field{pos}) . $key .
@@ -360,11 +379,42 @@ sub process_input
   display_input($field);
 }
 
+
+#===============================================================================
+
 sub do_cmd
 {
-  my $in = shift;
+  my $cmd = shift;
+  my $buf = shift;
 
-  addstr(1,0, "***** $in *****");
+  if ($cmd eq ":") {
+    if ($buf =~ /^([a-zA-Z]+)\s(.*)$/) {
+      ($cmd, $buf) = ($1, $2);
+    } else {
+      $cmd = $buf;
+      $buf = "";
+    }
+  }
+
+  # Add a new highlights (shortcut: "h").
+  if ($cmd eq 'hl') {
+    if ($buf =~ s:^/(.*)/$:$1:) {
+      $$screen{highlight}{$buf} = 2;
+      addstr(1,0, "add re: $buf");
+    } else {
+      $$screen{highlight}{$buf} = 1;
+    }
+  }
+  # Clear all highlights.
+  elsif ($cmd eq 'hlclear') {
+    $$screen{highlight} = {};
+  }
+  # Change highlight delay.
+  elsif ($cmd eq 'hld' and $buf =~ /^[0-9]+$/) {
+    $highlightafter = $buf;
+  }
+
+#  addstr(1,0, "***** $cmd $buf *****");
 }
 
 
@@ -797,16 +847,28 @@ sub draw_window
       $count++;
       next if $count < $$screen{page};
 
+      my $hl = testhighlight($data);
+
       my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
       my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
       addstr($$s{window}, $line, 0, $num);
       $off = 0;
+      if ($hl) {
+        attron($$s{window}, A_BOLD);
+        attron($$s{window}, COLOR_PAIR(2));
+      }
       if ($$d{$$s{code}}{$data}[3] < $time) {
         attron($$s{window}, COLOR_PAIR(1));
         $off = 1;
       }
       addstr($$s{window}, $line, $colw, $dstr);
-      attroff($$s{window}, COLOR_PAIR(1)) if $off;
+      if ($off) {
+        attroff($$s{window}, COLOR_PAIR(1));
+      }
+      if ($hl) {
+        attroff($$s{window}, COLOR_PAIR(2));
+        attroff($$s{window}, A_BOLD);
+      }
 
       $line++;
       last if $line > $$s{height};
@@ -818,6 +880,21 @@ sub draw_window
   }
 
   refresh($$s{window});
+}
+
+
+#===============================================================================
+
+sub testhighlight
+{
+  my $d = shift;
+
+  foreach my $h (keys %{$$screen{highlight}}) {
+    return 1 if $$screen{highlight}{$h} == 1 and index($d, $h) > -1;
+    return 1 if $$screen{highlight}{$h} == 2 and $d =~ $h;
+  }
+
+  return 0;
 }
 
 
