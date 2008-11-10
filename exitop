@@ -7,12 +7,11 @@
 
 # $Format:%H% d$
 
-
 use strict;
 use Curses;
 use Fcntl;
 
-use constant VERSION => '0.03';
+use constant VERSION => '0.04';
 
 # Try and pull in sys/ioctl.pl so that window resizes are smoother.
 eval { require 'sys/ioctl.ph'; };
@@ -97,18 +96,6 @@ if (! -t STDIN) {
   die "Sorry, something has gone wrong and STDIN is not a TTY!";
 }
 
-# This code commented out because of broken newterm on Curses and
-# Perl with PerlIo:
-# Close STDIN if is is the terminal, as we open /dev/tty and STDIN
-# would just be confusing. Otherwise, we want to watch it with select.
-#my $stdin = undef;
-#if (-t STDIN) {
-#  close(STDIN);
-#} else {
-#  vec($srin, fileno(STDIN), 1) = 1;
-#  $stdin = {fh => *STDIN{IO}, len => undef, buf => ""};
-#}
-
 # Screen and curses setup - $screen contains information about the
 # windows we are currently displaying.
 my $screen = { cursor => 0 };
@@ -117,8 +104,15 @@ add_windows($screen);
 
 # Paging - we start at the top!
 $$screen{page} = 0;
+
+# Highlights and other colouring.
+use constant HL_BRIGHT   => 1;
+use constant HL_BRIGHTRE => 2;
+use constant HL_DIM      => 3;
+use constant HL_DIMRE    => 4;
+
 $$screen{highlight} = {
-#  "le.ac.uk" => 1,
+#  "le(icester)?\.ac\.uk" => HL_DIMRE,
   };
 
 # Add TTY to select vector to watch
@@ -399,10 +393,17 @@ sub do_cmd
   # Add a new highlights (shortcut: "h").
   if ($cmd eq 'hl') {
     if ($buf =~ s:^/(.*)/$:$1:) {
-      $$screen{highlight}{$buf} = 2;
-      addstr(1,0, "add re: $buf");
+      $$screen{highlight}{$buf} = HL_BRIGHTRE;
     } else {
-      $$screen{highlight}{$buf} = 1;
+      $$screen{highlight}{$buf} = HL_BRIGHT;
+    }
+  }
+  # Dim something new.
+  elsif ($cmd eq 'dim') {
+    if ($buf =~ s:^/(.*)/$:$1:) {
+      $$screen{highlight}{$buf} = HL_DIMRE;
+    } else {
+      $$screen{highlight}{$buf} = HL_DIM;
     }
   }
   # Clear all highlights.
@@ -574,7 +575,6 @@ sub redraw
     } else {
       endwin();
     }
-#    refresh();
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -673,19 +673,16 @@ sub screen_init
   noecho();
   keypad(1);
 
-  # turn the cursor off; don't care where it is left
+  # Turn the cursor off; don't care where it is left.
   cursor();
-#  unless ($$screen{cursor} == 1) {
-#    curs_set(0);
-#    leaveok(1);
-#  }
 
   addstr(0,0, "exitop " . VERSION);
 
-  # set up colours
+  # Set up colours.
   start_color();
   init_pair(1, COLOR_YELLOW, COLOR_BLACK); # colour to highlight stale entries
-  init_pair(2, COLOR_RED, COLOR_BLACK); # colour to highlight stale entries
+  init_pair(2, COLOR_RED, COLOR_BLACK); # colour for highlighted entries
+  init_pair(3, COLOR_BLUE, COLOR_BLACK); # colour for dimmed entries
 }
 
 
@@ -853,9 +850,12 @@ sub draw_window
       my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
       addstr($$s{window}, $line, 0, $num);
       $off = 0;
-      if ($hl) {
+      if ($hl == HL_BRIGHT) {
         attron($$s{window}, A_BOLD);
         attron($$s{window}, COLOR_PAIR(2));
+      } elsif ($hl == HL_DIM) {
+        attron($$s{window}, COLOR_PAIR(3));
+        attron($$s{window}, A_DIM);
       }
       if ($$d{$$s{code}}{$data}[3] < $time) {
         attron($$s{window}, COLOR_PAIR(1));
@@ -865,9 +865,12 @@ sub draw_window
       if ($off) {
         attroff($$s{window}, COLOR_PAIR(1));
       }
-      if ($hl) {
+      if ($hl == HL_BRIGHT) {
         attroff($$s{window}, COLOR_PAIR(2));
         attroff($$s{window}, A_BOLD);
+      } elsif ($hl == HL_DIM) {
+        attroff($$s{window}, A_DIM);
+        attroff($$s{window}, COLOR_PAIR(3));
       }
 
       $line++;
@@ -890,8 +893,10 @@ sub testhighlight
   my $d = shift;
 
   foreach my $h (keys %{$$screen{highlight}}) {
-    return 1 if $$screen{highlight}{$h} == 1 and index($d, $h) > -1;
-    return 1 if $$screen{highlight}{$h} == 2 and $d =~ $h;
+    return HL_BRIGHT if $$screen{highlight}{$h} == HL_BRIGHT and index($d, $h) > -1;
+    return HL_BRIGHT if $$screen{highlight}{$h} == HL_BRIGHTRE and $d =~ $h;
+    return HL_DIM if $$screen{highlight}{$h} == HL_DIM and index($d, $h) > -1;
+    return HL_DIM if $$screen{highlight}{$h} == HL_DIMRE and $d =~ $h;
   }
 
   return 0;
