@@ -10,6 +10,7 @@
 use strict;
 use Curses;
 use Fcntl;
+use Time::Local;
 
 use constant VERSION => '0.04';
 
@@ -28,7 +29,7 @@ my $sig_winch = 0;
 # How long should we sleep for in select if nothing has happened?
 # We need to wake up every now and then to process files we are
 # watching.
-my $sleeptime = 1;
+my $sleeptime = 2;
 
 # Memory structures are tidied up every $tidyup times of the main loop.
 my $tidyup = 10;
@@ -56,6 +57,10 @@ my $kbmode = [KB_MAIN];
 # of complete messages, tied to $stats.
 my $stats = {};
 my $messages = {};
+
+# Time of last log line seen, for displaying on screen, and comparing.
+my $lastlinetime = "";
+my $lasttime = 0;
 
 # Set up bitmaps for select, to watch stdin and /dev/tty for
 # keyboard input.
@@ -137,7 +142,7 @@ foreach my $file (@ARGV) {
 
 # If nothing is happening, $delay will be set to $alarm so that
 # we aren't spinning around select.
-my $delay = $sleeptime;
+my $delay = 0;
 
 # Main program loop - first select on tty/stdin input, then test
 # each logfile to see if it has grown, in which case process more
@@ -177,8 +182,23 @@ while (1) {
     # Should be something new to read - open file if required.
     unless (defined $$logs{$file}{fh}) {
       sysopen($$logs{$file}{fh}, $file, O_RDONLY | O_NONBLOCK);
-      # Skip back one blocksize to get a bit of recent history.
+      # Store inode in case file is rotated.
+      $$logs{$file}{inode} = $st[1];
+      # Skip back one blocksize to get a bit of recent history, and make sure
+      # we are at the beginning of a line.
       sysseek($$logs{$file}{fh}, -$blocksize, 2);
+      my $bytes = 0;
+      my $str = '';
+      do {
+        $bytes = sysread($$logs{$file}{fh}, $str, 1);
+      } while ($bytes > 0 and $str != '\n');
+    }
+
+    # Check to see if file is rotated.
+    if (defined $$logs{$file}{inode} and $$logs{$file}{inode} != $st[1]) {
+      $$logs{$file}{inode} = $st[1];
+      close($$logs{$file}{fh});
+      $$logs{$file}{fh} = undef;
     }
 
     $delay = 0 if getfromfile($$logs{$file});
@@ -204,17 +224,25 @@ sub handle_key
 
 # Global keypresses, does not matter which mode:
   $$screen{page} += $$screen{wheight} - 2 if $key == KEY_NPAGE
-                                          or $key eq chr(14);
+                                          or $key eq chr(ord('N')-64);
   $$screen{page} -= $$screen{wheight} - 2 if $key == KEY_PPAGE
-                                          or $key eq chr(16);
+                                          or $key eq chr(ord('P')-64);
 
 # Standard mode keypresses:
   if ($$kbmode[0] == KB_MAIN) {
     finish() if $key eq 'q';
-    redraw() if $key eq chr(12);
-    $$screen{page} += 1 if $key == KEY_DOWN or $key eq "j";
-    $$screen{page} -= 1 if $key == KEY_UP   or $key eq "k";
-    $$screen{page} = 0 if $key == KEY_HOME;
+    redraw() if $key eq chr(ord('L')-64);
+    $$screen{page} += $$screen{wheight} - 2 if $key eq chr(ord('F')-64);
+    $$screen{page} -= $$screen{wheight} - 2 if $key eq chr(ord('B')-64);
+    $$screen{page} += int($$screen{wheight}/2) if $key eq chr(ord('D')-64);
+    $$screen{page} -= int($$screen{wheight}/2) if $key eq chr(ord('U')-64);
+    $$screen{page} += 1 if $key == KEY_DOWN or $key eq 'j';
+    $$screen{page} -= 1 if $key == KEY_UP   or $key eq 'k';
+    $$screen{page} = 0 if $key == KEY_HOME or $key eq 'g';
+    if ($key eq 'Z') {
+      $stats = {};
+      $messages = {};
+    }
     if ($key eq ':') {
       create_input(":", 1, 0, COLS(), \&do_cmd, ":");
     }
@@ -459,19 +487,24 @@ sub addline
 
   @bits = split(/\s+/, $line);
   ($date, $time, $timezone, @bits) = @bits;
-  
-  # should be calculated from log line, not use time()
-  my $msgtime = time();
 
-  my $id;
+  # timestamp on last seen line, for display
+  $lastlinetime = $time;
+  
   my $msg;
   my @statometer;
 
-  # message id
-  if ($bits[0] =~ /^[[:alnum:]]{6}-[[:alnum:]]{6}-[[:alnum:]]{2}$/) {
-    $id = $bits[0];
-    push @statometer, ["id", $bits[0]];
-  }
+  # message id - required at the moment
+  return unless ($bits[0] =~ /^[[:alnum:]]{6}-[[:alnum:]]{6}-[[:alnum:]]{2}$/);
+  my $id = $bits[0];
+  push @statometer, ["id", $bits[0]];
+
+  my @d = split('-', $date);
+  my @t = split(':', $time);
+  die "er? $line" if $d[1] == 0;
+  my $msgtime = timelocal($t[2], $t[1], $t[0], $d[2], $d[1] - 1, $d[0] - 1900);
+
+  $lasttime = $msgtime;
 
   if (defined $id) {
     $$messages{$id} = { rcpts => [],
@@ -565,6 +598,7 @@ sub redraw
 
   if ($sig_winch) {
     del_windows($screen);
+    # (Need to handle input window here too.)
     if (defined &TIOCGWINSZ) {
       my $winsize;
       unless (ioctl($$screen{terminfd}, &TIOCGWINSZ, $winsize="")) {
@@ -574,7 +608,9 @@ sub redraw
       resizeterm($row, $col);
     } else {
       endwin();
+      cursor();
     }
+    addstr(0,0, " " x COLS());
     add_windows($screen);
     $sig_winch = 0;
   }
@@ -583,13 +619,17 @@ sub redraw
     draw_window($s, $stats);
   }
 
+  # Title
+  addstr(0,0, "exitop " . VERSION);
+
   # Show how many lines we are skipping:
-  
   attron(COLOR_PAIR(2)) if $$screen{page} > 0;
   addstr(0,15, "s: " . $$screen{page} . " ");
   attroff(COLOR_PAIR(2)) if $$screen{page} > 0;
 
-  #refresh();
+  # Time of line last seen.
+  addstr(0, COLS() - length($lastlinetime), $lastlinetime);
+
   noutrefresh();
   setsyx($cy, $cx) if $$screen{cursor};
   doupdate();
@@ -607,8 +647,10 @@ sub tidy
   my $preservetime = 300; # preserve full message info for 5 mins
   my $preservenum = 5; # preserve at least 5 messages for each stat
 
-  my $t = time() - $longesttime;
-  my $pt = time() - $preservetime;
+#  my $t = time() - $longesttime;
+#  my $pt = time() - $preservetime;
+  my $t = $lasttime - $longesttime;
+  my $pt = $lasttime - $preservetime;
 
   foreach my $code (keys %$s) {
     foreach my $data (keys %{$$s{$code}}) {
@@ -675,8 +717,6 @@ sub screen_init
 
   # Turn the cursor off; don't care where it is left.
   cursor();
-
-  addstr(0,0, "exitop " . VERSION);
 
   # Set up colours.
   start_color();
@@ -832,7 +872,8 @@ sub draw_window
   attroff($$s{window}, A_REVERSE);
   attroff($$s{window}, A_BOLD);
 
-  my $time = time() - $highlightafter;
+#  my $time = time() - $highlightafter;
+  my $time = $lasttime - $highlightafter;
   my $off;
 
   if (defined $d and defined $$d{$$s{code}}) {
@@ -923,6 +964,5 @@ sub loglinehook
     $$lref = "$year-$mon-$day $time +0000 $log";
   }
 }
-
 
 # vi:expandtab:sw=2:ts=2:tw=80:comments=:si:commentstring=
