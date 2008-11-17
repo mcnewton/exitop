@@ -46,6 +46,9 @@ my $blocksize = 1024*1024;
 # period.
 my $highlightafter = 300;
 
+# Show frequency information?
+my $showfreq = 0;
+
 # Keyboard input handling
 use constant KB_MAIN  => 0;
 use constant KB_INPUT => 1;
@@ -194,14 +197,14 @@ while (1) {
       } while ($bytes > 0 and $str != '\n');
     }
 
+    $delay = 0 if getfromfile($$logs{$file});
+
     # Check to see if file is rotated.
     if (defined $$logs{$file}{inode} and $$logs{$file}{inode} != $st[1]) {
       $$logs{$file}{inode} = $st[1];
       close($$logs{$file}{fh});
       $$logs{$file}{fh} = undef;
     }
-
-    $delay = 0 if getfromfile($$logs{$file});
   }
 
   redraw();
@@ -239,6 +242,7 @@ sub handle_key
     $$screen{page} += 1 if $key == KEY_DOWN or $key eq 'j';
     $$screen{page} -= 1 if $key == KEY_UP   or $key eq 'k';
     $$screen{page} = 0 if $key == KEY_HOME or $key eq 'g';
+    $showfreq = 1 - $showfreq if $key eq 'f';
     if ($key eq 'Z') {
       $stats = {};
       $messages = {};
@@ -486,7 +490,10 @@ sub addline
   loglinehook(\$line);
 
   @bits = split(/\s+/, $line);
-  ($date, $time, $timezone, @bits) = @bits;
+  ($date, $time, @bits) = @bits;
+
+  # Pull off timezone if log_timezone is set
+  ($timezone, @bits) = @bits if $bits[0] =~ /^[\+-]?\d{4}$/;
 
   # timestamp on last seen line, for display
   $lastlinetime = $time;
@@ -554,9 +561,15 @@ sub addline
 
   foreach my $i (0..$#statometer) {
     my $s = $statometer[$i];
+    # 0 -> Number of msgs seen.
+    # 1 -> Time of last message.
+    # 2 -> Hashref of messages.
+    # 3 -> Time of first message.
     $$stats{$$s[0]}{$$s[1]} = [0, 0, {}, $msgtime] unless defined $$stats{$$s[0]}{$$s[1]};
     $$stats{$$s[0]}{$$s[1]}[0]++;    # number seen
-    $$stats{$$s[0]}{$$s[1]}[1] = $msgtime;   # last time seen
+    # Time first and last message seen (input from several logs complicates this).
+    $$stats{$$s[0]}{$$s[1]}[1] = $msgtime if $msgtime > $$stats{$$s[0]}{$$s[1]}[1];
+    $$stats{$$s[0]}{$$s[1]}[3] = $msgtime if $msgtime < $$stats{$$s[0]}{$$s[1]}[3];
     if (!defined $$stats{$$s[0]}{$$s[1]}[2]{$id}) {
       $$stats{$$s[0]}{$$s[1]}[2]{$id} = $msg;  # hash of msgs for reference
       $$msg{count}++;
@@ -572,7 +585,6 @@ sub sig
   my $signame = shift;
 
   $sig_winch = 1 if $signame eq 'WINCH';
-#  $alarmed = 1 if $signame eq 'ALRM';
 
   finish() if $signame eq 'INT';
 }
@@ -624,7 +636,7 @@ sub redraw
 
   # Show how many lines we are skipping:
   attron(COLOR_PAIR(2)) if $$screen{page} > 0;
-  addstr(0,15, "s: " . $$screen{page} . " ");
+  addstr(0,15, "s: " . $$screen{page} . "    ");
   attroff(COLOR_PAIR(2)) if $$screen{page} > 0;
 
   # Time of line last seen.
@@ -886,9 +898,18 @@ sub draw_window
       next if $count < $$screen{page};
 
       my $hl = testhighlight($data);
+      my $out = $data;
+
+      if ($showfreq) {
+        my $delta = $$d{$$s{code}}{$data}[1] - $$d{$$s{code}}{$data}[3];
+        my $avg = 0;
+        my $avg = $$d{$$s{code}}{$data}[0] / $delta unless $delta == 0;
+        $avg = sprintf("%.3f", $avg);
+        $out = "[$avg] $out";
+      }
 
       my $num = sprintf("%5d", $$d{$$s{code}}{$data}[0]);
-      my $dstr = substr($data . " " x $$s{width}, 0, $$s{width} - $colw);
+      my $dstr = substr($out . " " x $$s{width}, 0, $$s{width} - $colw);
       addstr($$s{window}, $line, 0, $num);
       $off = 0;
       if ($hl == HL_BRIGHT) {
