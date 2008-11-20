@@ -12,7 +12,7 @@ use Curses;
 use Fcntl;
 use Time::Local;
 
-use constant VERSION => '0.04';
+use constant VERSION => '0.05';
 
 # Try and pull in sys/ioctl.pl so that window resizes are smoother.
 eval { require 'sys/ioctl.ph'; };
