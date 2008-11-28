@@ -903,7 +903,7 @@ sub draw_window
       if ($showfreq) {
         my $delta = $$d{$$s{code}}{$data}[1] - $$d{$$s{code}}{$data}[3];
         my $avg = 0;
-        my $avg = $$d{$$s{code}}{$data}[0] / $delta unless $delta == 0;
+        $avg = $$d{$$s{code}}{$data}[0] / $delta unless $delta == 0;
         $avg = sprintf("%.3f", $avg);
         $out = "[$avg] $out";
       }

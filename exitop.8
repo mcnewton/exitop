@@ -1,0 +1,113 @@
+.TH exitop 8 "28 November, 2008" "version 0.05" "USER COMMANDS"
+.SH NAME
+exitop \- near real-time exim mail log display
+.SH SYNOPSIS
+.B exitop
+[/path/to/exim/logfile ...]
+.SH DESCRIPTION
+Exitop gives an easier way to see what e-mails are being processed
+through an Exim mail server. It does this by watching the log
+files and summarising information that it has learnt in the
+terminal window. Statistics are counted (such as the number of
+times a particular e-mail address has sent a mail). If the
+particular statistic is too old it will disappear from view. This
+gives an idea of what is actually happening on the server at the
+moment.
+
+The screen is comprised of several sections, which contain
+statistics about sender addresses, recipient addresses, sending
+hosts, etc. Subject information is also available if subject
+logging is enabled in Exim. The sections on screen are sorted from
+most to least.
+
+Particular entries on screen can be highlighted or dimmed out, to
+make finding odd entries easier. For instance, Exitop may be
+usually run with the local domain names dimmed out, and during a
+burst of spam activity the user may choose to highlight particular
+entries. These can be done with simple string matching or more
+complex regular expressions.
+.SH INVOCATION AND USAGE
+Exitop can be run by either passing the name of log files to watch
+on the command line, or by feeding them in on STDIN, or both.
+Exitop will attempt to re-open rotated logfiles that it is
+watching (which cannot happen for STDIN, of course).
+
+Exitop accepts several keys when running. These are mainly similar
+to vi(1) keypresses.
+." .TP
+." \fBd\fR
+." dim entries on screen
+.TP
+\fBf\fR
+toggle frequency display for each statistic (hits per second)
+.TP
+\fBg\fR
+jump to the top of the statistics (go home)
+.TP
+\fBh\fR
+highlight entries on screen (see :highlight in COMMAND MODE
+section)
+.TP
+\fBj, DOWN ARROW, CTRL-N\fR
+scroll the screen windows down one line
+.TP
+\fBk, UP ARROW, CTRL-P\fR
+scoll up one line
+.TP
+\fBZ\fR
+clear all statistics (requires capital Z)
+.TP
+\fB:\fR
+enter command entry mode (see COMMAND MODE section)
+.TP
+\fBCTRL-L\fR
+refresh the screen
+.TP
+\fBCTRL-F, PGDN\fR
+page down one screen
+.TP
+\fBCTRL-B, PGUP\fR
+page up one screen
+.TP
+\fBCTRL-D\fR
+page down half a screen
+.TP
+\fBCTRL-U\fR
+page up half a screen
+.SH COMMAND MODE
+.SH EXAMPLES
+.TP
+.B exitop /var/log/exim/mainlog
+Start exitop watching /var/log/exim/mainlog, re-opening the
+file whenever it is rotated.
+.TP
+.B tail -f /var/log/exim/mainlog | exitop
+Watch /var/log/exim/mainlog, via STDIN.
+.TP
+.B nc -l -p 32000 | exitop ./server1.log ./server2.log
+Watch ./server1.log and ./server2.log, as well as logs being
+streamed over the network with netcat.
+.SH BUGS
+There are bound to be many. Current known ones include:
+.PP
+Display bug when entering text in : mode that is wider than the
+current terminal.
+.PP
+Will easily crash with a segfault if the window is resized when in
+text entering mode (:).
+.PP
+Dimmed items still change to "old" colour when they have been
+around for a while, which may make them highlight unnecessarily.
+.PP
+This manual page is not yet complete.
+.PP
+No command-line options or built-in help.
+
+.SH AUTHOR
+Exitop is written and maintained by Matthew Newton
+<mcn4@leicester.ac.uk>
+at the University of Leicester (http://www.le.ac.uk/).
+
+.SH SEE ALSO
+exim(8),
+http://www.le.ac.uk/its/mcn4/exitop/
