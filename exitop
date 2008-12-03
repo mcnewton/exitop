@@ -517,6 +517,7 @@ sub addline
     $$messages{$id} = { rcpts => [],
                         rcptdomains => [],
                         id => $id,
+                        firstseen => $lasttime,
                         count => 0 } if ! defined $$messages{$id};
     $msg = $$messages{$id};
   }
@@ -642,6 +643,10 @@ sub redraw
   # Time of line last seen.
   addstr(0, COLS() - length($lastlinetime), $lastlinetime);
 
+  my $mfreq = messagefreq();
+  addstr(0, 23, "msg freq: " . sprintf("%.3f", $$mfreq[0]) . ", " .
+                               sprintf("%.3f", $$mfreq[1]));
+
   noutrefresh();
   setsyx($cy, $cx) if $$screen{cursor};
   doupdate();
@@ -761,6 +766,26 @@ sub cursor
   leaveok(1 - $$screen{cursor});
 }
 
+
+#===============================================================================
+
+
+sub messagefreq
+{
+  my $time = [$lasttime - 60, $lasttime - 300]; # 1-minute, 5-minute
+  my $freq = [0, 0];
+
+  foreach my $id (keys %$messages) {
+    next unless defined $$messages{$id}{firstseen};
+    $$freq[0]++ if $$messages{$id}{firstseen} > $$time[0];
+    $$freq[1]++ if $$messages{$id}{firstseen} > $$time[1];
+  }
+
+  $$freq[0] = $$freq[0] / 60;
+  $$freq[1] = $$freq[1] / 300;
+
+  return $freq;
+}
 
 #===============================================================================
 
