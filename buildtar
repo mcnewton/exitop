@@ -1,0 +1,16 @@
+#! /bin/sh
+# $Format:%H% d$
+
+NAME=exitop
+VER="$1"
+RELEASE="release-$VER"
+
+if [ -z "$VER" ]; then
+  echo "Syntax: $0 <version>"
+  exit 1
+fi
+
+git tag $RELEASE 2>/dev/null || echo "Tag $RELEASE already exists - generating tarball only"
+
+git archive --format=tar --prefix=$NAME-$VER/ $RELEASE | gzip > $NAME-$VER.tar.gz
+
