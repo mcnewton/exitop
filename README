@@ -1,0 +1,35 @@
+exitop - exim near real-time mail flow monitoring
+=================================================
+
+Exitop is a perl utility to show the mail that is moving through
+an exim server in near real-time. It reads multiple exim (or
+syslogged) logfiles either as files specified in the arguments or
+on STDIN. The screen is updated with latest information about mail
+flow as it happens. It is especially useful to view top-talkers,
+mail loops and bulk mailings.
+
+
+Invocation
+----------
+
+Exitop will accept data on STDIN or tail files that are passed as
+arguments. The following are all legal:
+
+  exitop /var/log/exim/mainlog
+
+  exitop /var/log/exim/server1.main /var/log/exim/server2.main
+
+  tail -f /var/log/exim/server1.main | exitop /var/log/exim/server2.main
+
+If the logfiles are in syslog format, then the "syslog2exim"
+script can convert them to a quasi-exim log format that can be
+read. This functionality is built-in to exitop since version 0.02,
+so it is not necessary to pre-process logs with syslog2exim before
+reading into exitop.
+
+
+Matthew Newton
+University of Leicester
+2013-05-17
+
+$Format:%H% d$
